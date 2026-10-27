@@ -345,6 +345,7 @@ type ServerMessage =
       readonly state: "delta" | "final";
       readonly text: string;
       readonly seq: number;
+      readonly timestamp: number;
     }
   | { readonly kind: "tick"; readonly ts: number }
   | { readonly kind: "heartbeat" };
@@ -379,7 +380,13 @@ type StepInput =
       readonly mintedConnId: string;
     }
   | { readonly type: "tick"; readonly nowMs: number }
-  | { readonly type: "model"; readonly requestId: RequestId; readonly fullText: string; readonly finish: boolean }
+  | {
+      readonly type: "model";
+      readonly requestId: RequestId;
+      readonly fullText: string;
+      readonly finish: boolean;
+      readonly nowMs: number;
+    }
   | { readonly type: "close" };
 
 type TokenBook = {
@@ -465,12 +472,17 @@ function serializeServerMessage(message: ServerMessage): string {
       return JSON.stringify({
         type: "event",
         event: "chat",
+        seq: message.seq,
         payload: {
           runId: message.runId,
           sessionKey: message.sessionKey,
           seq: message.seq,
           state: message.state,
-          message: { role: "assistant", content: [{ type: "text", text: message.text }] },
+          message: {
+            role: "assistant",
+            content: [{ type: "text", text: message.text }],
+            timestamp: message.timestamp,
+          },
         },
       });
     case "tick":
@@ -572,8 +584,8 @@ function reject(state: Session, id: RequestId, reason: RejectReason): StepResult
   return send(state, { kind: "reject", id, reason });
 }
 
-function chatMessage(run: LiveRun, state: "delta" | "final", text: string, seq: number): ServerMessage {
-  return { kind: "chat", runId: run.runId, sessionKey: run.sessionKey, state, text, seq };
+function chatMessage(run: LiveRun, state: "delta" | "final", text: string, seq: number, timestamp: number): ServerMessage {
+  return { kind: "chat", runId: run.runId, sessionKey: run.sessionKey, state, text, seq, timestamp };
 }
 
 function helloFrom(session: Extract<Session, { tag: "live" }>, id: RequestId): ServerMessage {
@@ -669,7 +681,7 @@ function onModel(session: Session, input: Extract<StepInput, { type: "model" }>)
     runs.set(input.requestId, { ...run, text: input.fullText });
     const effects: SessionEffect[] = [];
     if (input.fullText !== run.text) {
-      effects.push({ type: "send", message: chatMessage(run, "delta", input.fullText, 1) });
+      effects.push({ type: "send", message: chatMessage(run, "delta", input.fullText, 0, input.nowMs) });
     }
     return { state: { ...session, runs }, effects };
   }
@@ -683,8 +695,8 @@ function onModel(session: Session, input: Extract<StepInput, { type: "model" }>)
   const turns = new Map(session.turns);
   turns.set(run.sessionKey, [...withUser, { role: "assistant", content: text }]);
   const effects: SessionEffect[] = [
-    { type: "send", message: chatMessage(run, "delta", text, 1) },
-    { type: "send", message: chatMessage(run, "final", text, 2) },
+    { type: "send", message: chatMessage(run, "delta", text, 0, input.nowMs) },
+    { type: "send", message: chatMessage(run, "final", text, 1, input.nowMs) },
   ];
   if (run.waiterId) effects.push({ type: "send", message: { kind: "wait", id: run.waiterId, runId: run.runId, text } });
   return { state: { ...session, runs, turns }, effects };
@@ -730,7 +742,7 @@ function step(session: Session, input: StepInput, ctx: StepContext): StepResult 
             state: { ...session, runs },
             effects: [
               { type: "send", message: { kind: "ok", id: request.id } },
-              { type: "send", message: chatMessage(run, "final", run.text, 2) },
+              { type: "send", message: chatMessage(run, "final", run.text, 1, input.nowMs) },
             ],
           };
         }
@@ -936,7 +948,7 @@ function attachSocket(socket: SocketPort, config: GatewayConfig, book: TokenBook
             config,
           ).then((chat) => {
             if (session.tag === "closed") return;
-            apply(step(session, { type: "model", requestId: effect.requestId, fullText: chat.reply, finish: true }, ctx));
+            apply(step(session, { type: "model", requestId: effect.requestId, fullText: chat.reply, finish: true, nowMs: Date.now() }, ctx));
           });
           break;
         case "close":

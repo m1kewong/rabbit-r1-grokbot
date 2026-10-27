@@ -117,12 +117,14 @@ describe("OpenClaw socket", () => {
       expect(typeof ackPayload.runId).toBe("string");
       const chats = chatFrames(frames);
       expect(chats.map((frame) => payloadOf(frame).state)).toEqual(["delta", "final"]);
+      expect(chats.map((frame) => asRecord(frame)?.seq)).toEqual([0, 1]);
       expect(chats.map((frame) => textOf(frame))).toEqual([OFFLINE, OFFLINE]);
       expect(payloadOf(chats[0]).runId).toBe(ackPayload.runId);
-      expect(payloadOf(chats[1]).message).toEqual({
+      expect(payloadOf(chats[1]).message).toMatchObject({
         role: "assistant",
         content: [{ type: "text", text: OFFLINE }],
       });
+      expect(typeof asRecord(payloadOf(chats[1]).message)?.timestamp).toBe("number");
 
       const before = chatFrames(frames).length;
       ws.send(
