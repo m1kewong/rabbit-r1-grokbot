@@ -76,7 +76,7 @@ describe("POST /api/chat", () => {
         body: JSON.stringify({ message: "Hello", personaId: "jarvis" }),
       });
       expect(await jarvis.json()).toMatchObject({
-        reply: `${OFFLINE}[Agent: J.A.R.V.I.S.] Hello`,
+        reply: `${OFFLINE}Hello`,
         model: "local-friday",
         personaId: "jarvis",
         routedToGrokBot: false,
@@ -87,7 +87,7 @@ describe("POST /api/chat", () => {
         body: JSON.stringify({ message: "[Agent: J.A.R.V.I.S.] Hello", personaId: "jarvis" }),
       });
       expect(await doubled.json()).toMatchObject({
-        reply: `${OFFLINE}[Agent: J.A.R.V.I.S.] Hello`,
+        reply: `${OFFLINE}Hello`,
       });
       const alias = await fetch(`${server.url}/v1/chat/completions`, {
         method: "POST",
@@ -155,7 +155,7 @@ describe("POST /api/chat", () => {
           model: "grok",
           messages: [
             { role: "user", content: "Earlier" },
-            { role: "user", content: "[Agent: J.A.R.V.I.S.] Hello" },
+            { role: "user", content: "Hello" },
           ],
         },
       },
@@ -214,7 +214,7 @@ describe("POST /api/chat", () => {
 });
 
 describe("postChat", () => {
-  it("applies the R1 prefix once and leaves an existing prefix in place", async () => {
+  it("posts the utterance without an agent name", async () => {
     const bodies: { message: string; history: { content: string }[] }[] = [];
     vi.stubGlobal("fetch", async (url: string, init?: RequestInit) => {
       expect(String(url)).toBe("/api/chat");
@@ -238,10 +238,8 @@ describe("postChat", () => {
     });
     expect(first).toMatchObject({ ok: true, reply: "Hi", model: "local-friday", routedToGrokBot: false });
     expect(second.ok).toBe(true);
-    expect(bodies.map((body) => body.message)).toEqual([
-      "[R1 -> J.A.R.V.I.S.] Hello",
-      "[R1 -> J.A.R.V.I.S.] Hello",
-    ]);
+    expect(bodies.map((body) => body.message)).toEqual(["Hello", "Hello"]);
+    expect(bodies.some((body) => body.message.includes("J.A.R.V.I.S."))).toBe(false);
     expect(bodies[1]?.history).toEqual([{ role: "user", content: "Hello" }]);
   });
 });

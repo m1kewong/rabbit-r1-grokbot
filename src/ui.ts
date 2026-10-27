@@ -3,7 +3,7 @@ import { getHealth } from "./client";
 import { PERSONAS, personaById, presetById, type HealthStatus, type Persona } from "./domain";
 import { startDrive } from "./drive";
 import { type DeviceEvent, type DeviceState, type SpeakPayload } from "./device";
-import { creationQr, openClawForLocation, renderDataUrl } from "./qr";
+import { CREATION_URL_VERSION, creationQr, openClawForLocation, renderDataUrl } from "./qr";
 
 const SCREEN_STYLE = "width:240px; height:282px; overflow:hidden";
 const DEFAULT_BRIDGE = "https://even-g2-bridge.saviormike.workers.dev";
@@ -29,8 +29,14 @@ type SpeechRec = {
   lang: string;
   start(): void;
   onresult: ((event: { results: ArrayLike<ArrayLike<{ transcript: string }>> }) => void) | null;
-  onerror: (() => void) | null;
+  onerror: ((event: { error?: string }) => void) | null;
   onend: (() => void) | null;
+};
+
+const SPEECH_LANGS = ["zh-HK", "yue-HK", "zh-TW", "zh-CN"] as const;
+
+const AVATARS: Partial<Record<Persona["id"], string>> = {
+  friday: "/avatars/friday.png",
 };
 
 type HealthView = "unknown" | HealthStatus | { ok: false; error: "network" };
@@ -76,56 +82,89 @@ function healthText(status: HealthView): string {
   return "Gateway unreachable";
 }
 
+function sheetOpen(state: DeviceState): boolean {
+  return (
+    state.gesture.tag === "drafting" ||
+    state.gesture.tag === "ptt-armed" ||
+    state.gesture.tag === "awaiting-utterance"
+  );
+}
+
+function whoMark(persona: Persona): string {
+  const src = AVATARS[persona.id];
+  if (src) return `<img class="who-mark avatar" alt="" width="28" height="28" src="${src}" />`;
+  return `<i class="who-mark accent" style="background:${persona.accents[0]}"></i>`;
+}
+
 function statusMarkup(state: DeviceState): string {
   if (state.gesture.tag === "ptt-armed" || state.gesture.tag === "awaiting-utterance") {
     return `<p class="line pending"><span>Mic</span>Listening</p>`;
   }
   if (state.turn.tag === "pending") return `<p class="line pending"><span>Link</span>Sending</p>`;
   if (state.turn.tag === "failed") return `<p class="line failed"><span>Link</span>No reply</p>`;
-  if (state.turn.tag === "silent") return `<p class="line failed"><span>Mic</span>No speech</p>`;
+  if (state.turn.tag === "no-mic") return `<p class="line failed"><span>Mic</span>No mic</p>`;
+  if (state.turn.tag === "silent") {
+    const note = state.turn.ear === "r1" ? `<p class="hint">Chinese Traditional in R1 Settings</p>` : "";
+    return `<p class="line failed"><span>Mic</span>No speech</p>${note}`;
+  }
   return "";
 }
 
 function logMarkup(state: DeviceState, persona: Persona): string {
   const lines =
     state.transcript.length === 0
-      ? `<p class="hint">Side click sends. Hold Side to talk.</p>`
+      ? ""
       : state.transcript
           .map((turn) => {
             const who = turn.role === "user" ? "You" : persona.label;
-            return `<p class="line ${turn.role}"><span>${escapeHtml(who)}</span>${escapeHtml(turn.content)}</p>`;
+            return `<p class="line ${turn.role}"><span>${escapeHtml(who)}</span><b>${escapeHtml(turn.content)}</b></p>`;
           })
           .join("");
   return `${lines}${statusMarkup(state)}`;
 }
 
+function bars(): string {
+  return Array.from({ length: 17 }, () => "<i></i>").join("");
+}
+
+function listeningNow(state: DeviceState): boolean {
+  return state.gesture.tag === "ptt-armed" || state.gesture.tag === "awaiting-utterance";
+}
+
+function neuronSrc(active: boolean): string {
+  const name = active ? "neuron-listen.gif" : "neuron-idle.gif";
+  return `/${name}?v=${CREATION_URL_VERSION}`;
+}
+
+const SEND_ICON = `<svg viewBox="0 0 12 12" aria-hidden="true"><path d="M2.2 1.2 L10.6 6 L2.2 10.8 Z" fill="currentColor"/></svg>`;
+
 function screenMarkup(state: DeviceState, persona: Persona, mark: "bare" | null): string {
-  const accent = persona.accents[0];
-  const dots = PERSONAS.map((item) => `<i class="${item.id === state.personaId ? "on" : ""}"></i>`).join("");
   const paintAttr = mark === "bare" ? ` data-paint="bare"` : "";
+  const open = sheetOpen(state);
+  const listening = listeningNow(state);
   return `<section class="screen"${paintAttr} data-screen="stark-r1" style="${SCREEN_STYLE}">
-    <header class="top">
-      <div class="brand">
-        <svg class="bolt" viewBox="0 0 16 16" aria-hidden="true"><circle cx="8" cy="8" r="5.2" fill="none" stroke="#FE5000" stroke-width="1.6"/><circle cx="8" cy="8" r="1.6" fill="#F59E0B"/></svg>
-        <b>STARK</b><span>R1</span>
-      </div>
-      <div class="actions">
-        <button type="button" data-control="speaker" aria-pressed="${state.speakerOn ? "true" : "false"}">SPK</button>
-        <button type="button" data-control="exit">Exit</button>
-      </div>
+    <i class="tick tl"></i><i class="tick tr"></i><i class="tick bl"></i><i class="tick br"></i>
+    <header class="identity">
+      ${whoMark(persona)}
+      <h1 data-bind="label">${escapeHtml(persona.label)}</h1>
     </header>
-    <div class="who">
-      <i class="accent" style="background:${accent}"></i>
-      <div>
-        <h1 data-bind="label" style="color:${accent}">${escapeHtml(persona.label)}</h1>
-        <p data-bind="role">${escapeHtml(persona.role)}</p>
-        <div class="ticks" data-bind="ticks">${dots}</div>
-      </div>
+    <div class="actions">
+      <button type="button" data-control="speaker" aria-pressed="${state.speakerOn ? "true" : "false"}">SPK</button>
+      <button type="button" data-control="exit">Exit</button>
+    </div>
+    <div class="hero">
+      <button type="button" class="neuron" data-neuron="1" aria-label="Hold to talk" aria-pressed="${open ? "true" : "false"}">
+        <img class="neuron-gif" alt="" width="220" height="220" src="${neuronSrc(open)}" />
+      </button>
     </div>
     <div class="log" data-bind="log">${logMarkup(state, persona)}</div>
-    <p class="preset" data-bind="preset"><span>Preset</span>${escapeHtml(presetById(state.presetId).text)}</p>
-    <input id="composer" class="composer" aria-label="Message" value="${escapeHtml(state.composer)}" />
-    <button type="button" class="side" data-ptt="1">Side</button>
+    <p class="ready"${open ? " hidden" : ""}>READY</p>
+    <div class="sheet${listening ? " live" : ""}"${open ? "" : " hidden"}>
+      <div class="wave" aria-hidden="true">${bars()}</div>
+      <p class="listen">${listening ? "Listening" : ""}</p>
+      <input id="composer" class="composer" aria-label="Message" placeholder="Ask anything..." value="${escapeHtml(state.composer)}" />
+      <button type="button" data-send="1" aria-label="Send">${SEND_ICON}</button>
+    </div>
   </section>`;
 }
 
@@ -245,14 +284,39 @@ function syncComposer(input: HTMLInputElement, value: string): void {
 function applyLive(scope: ParentNode, state: DeviceState, persona: Persona): void {
   const accent = persona.accents[0];
   const label = scope.querySelector("[data-bind=label]");
-  if (label instanceof HTMLElement) {
-    label.textContent = persona.label;
-    label.style.color = accent;
-  }
+  if (label instanceof HTMLElement) label.textContent = persona.label;
   const role = scope.querySelector("[data-bind=role]");
   if (role) role.textContent = persona.role;
-  const bar = scope.querySelector(".accent");
-  if (bar instanceof HTMLElement) bar.style.background = accent;
+  const mark = scope.querySelector(".who-mark");
+  const src = AVATARS[persona.id];
+  if (src && mark instanceof HTMLImageElement) {
+    if (mark.getAttribute("src") !== src) mark.src = src;
+  } else if (!src && mark instanceof HTMLElement && mark.classList.contains("accent")) {
+    mark.style.background = accent;
+  } else if (mark) {
+    const template = mark.ownerDocument.createElement("template");
+    template.innerHTML = whoMark(persona);
+    const next = template.content.firstElementChild;
+    if (next) mark.replaceWith(next);
+  }
+  const listening = listeningNow(state);
+  const open = sheetOpen(state);
+  const sheet = scope.querySelector(".sheet");
+  if (sheet instanceof HTMLElement) {
+    sheet.hidden = !open;
+    sheet.classList.toggle("live", listening);
+  }
+  const ready = scope.querySelector(".ready");
+  if (ready instanceof HTMLElement) ready.hidden = open;
+  const neuron = scope.querySelector(".neuron");
+  if (neuron instanceof HTMLElement) {
+    neuron.setAttribute("aria-pressed", open ? "true" : "false");
+    const gif = neuron.querySelector(".neuron-gif");
+    const gifSrc = neuronSrc(open);
+    if (gif instanceof HTMLImageElement && gif.getAttribute("src") !== gifSrc) gif.setAttribute("src", gifSrc);
+  }
+  const listen = scope.querySelector(".listen");
+  if (listen) listen.textContent = listening ? "Listening" : "";
   const ticks = scope.querySelector("[data-bind=ticks]");
   if (ticks) {
     const marks = ticks.querySelectorAll("i");
@@ -267,7 +331,10 @@ function applyLive(scope: ParentNode, state: DeviceState, persona: Persona): voi
   const speaker = scope.querySelector("[data-control=speaker]");
   if (speaker instanceof HTMLElement) speaker.setAttribute("aria-pressed", state.speakerOn ? "true" : "false");
   const composer = scope.querySelector("#composer");
-  if (composer instanceof HTMLInputElement) syncComposer(composer, state.composer);
+  if (composer instanceof HTMLInputElement) {
+    syncComposer(composer, state.composer);
+    if (state.gesture.tag === "drafting" && composer.ownerDocument.activeElement !== composer) composer.focus();
+  }
 }
 
 function wire(root: HTMLElement, target: Window, dispatch: (event: DeviceEvent) => void): void {
@@ -275,9 +342,13 @@ function wire(root: HTMLElement, target: Window, dispatch: (event: DeviceEvent) 
   wired = true;
   let pressTimer: number | null = null;
   let armed = false;
+  let kind: "neuron" | "ptt" | null = null;
   root.addEventListener("pointerdown", (event) => {
     const node = event.target;
-    if (!(node instanceof Element) || !node.closest("[data-ptt]")) return;
+    if (!(node instanceof Element)) return;
+    const next = node.closest("[data-neuron]") ? "neuron" : node.closest("[data-ptt]") ? "ptt" : null;
+    if (!next) return;
+    kind = next;
     armed = false;
     if (pressTimer !== null) target.clearTimeout(pressTimer);
     pressTimer = target.setTimeout(() => {
@@ -286,11 +357,10 @@ function wire(root: HTMLElement, target: Window, dispatch: (event: DeviceEvent) 
       dispatch({ type: "longPressStart" });
     }, 450);
   });
-  const endPress = (event: Event): void => {
-    const node = event.target;
-    if (!(node instanceof Element)) return;
-    const held = Boolean(node.closest("[data-ptt]"));
-    if (!held && !armed) return;
+  const endPress = (): void => {
+    const pressed = kind;
+    if (!pressed && !armed) return;
+    kind = null;
     if (pressTimer !== null) {
       target.clearTimeout(pressTimer);
       pressTimer = null;
@@ -300,19 +370,31 @@ function wire(root: HTMLElement, target: Window, dispatch: (event: DeviceEvent) 
       dispatch({ type: "longPressEnd" });
       return;
     }
-    if (held) dispatch({ type: "sideClick", nowMs: Date.now() });
+    if (pressed === "neuron") dispatch({ type: "toggleDraft" });
+    else if (pressed === "ptt") dispatch({ type: "sideClick", nowMs: Date.now() });
   };
   root.addEventListener("pointerup", endPress);
   root.addEventListener("pointercancel", endPress);
   root.addEventListener("click", (event) => {
     const node = event.target;
     if (!(node instanceof Element)) return;
+    if (node.closest("[data-send]")) {
+      dispatch({ type: "sendDraft" });
+      return;
+    }
     const control = node.closest("[data-control]");
     if (!(control instanceof HTMLElement)) return;
     if (control.dataset.control === "scroll-up") dispatch({ type: "scroll", direction: "up" });
     if (control.dataset.control === "scroll-down") dispatch({ type: "scroll", direction: "down" });
     if (control.dataset.control === "speaker") dispatch({ type: "toggleSpeaker" });
     if (control.dataset.control === "exit") dispatch({ type: "exit" });
+  });
+  root.addEventListener("keydown", (event) => {
+    if (!(event instanceof KeyboardEvent) || event.key !== "Enter") return;
+    const node = event.target;
+    if (!(node instanceof HTMLInputElement) || node.id !== "composer") return;
+    event.preventDefault();
+    dispatch({ type: "sendDraft" });
   });
   root.addEventListener("input", (event) => {
     const node = event.target;
@@ -476,7 +558,7 @@ export function exitWebView(): void {
   (window as R1Window).closeWebView?.postMessage("");
 }
 
-function captureSpeech(target: Window): Promise<string | null> {
+export function captureSpeech(target: Window): Promise<string | null> {
   const view = target as R1Window;
   const Ctor = view.SpeechRecognition ?? view.webkitSpeechRecognition;
   if (!Ctor) return Promise.resolve(null);
@@ -487,16 +569,43 @@ function captureSpeech(target: Window): Promise<string | null> {
       settled = true;
       resolve(value);
     };
-    try {
-      const rec = new Ctor();
-      rec.lang = "en-US";
-      rec.onresult = (event) => finish(event.results[0]?.[0]?.transcript ?? null);
-      rec.onerror = () => finish(null);
-      rec.onend = () => finish(null);
-      rec.start();
-    } catch {
-      finish(null);
-    }
+    let index = 0;
+    const attempt = (): void => {
+      let moved = false;
+      let rec: SpeechRec;
+      try {
+        rec = new Ctor();
+      } catch {
+        finish(null);
+        return;
+      }
+      rec.lang = SPEECH_LANGS[index] ?? "zh-HK";
+      rec.onresult = (event) => {
+        const text = event.results[0]?.[0]?.transcript?.trim() ?? "";
+        finish(text === "" ? null : text);
+      };
+      rec.onerror = (event) => {
+        if (settled || moved) return;
+        const code = event?.error ?? "";
+        if (code === "language-not-supported" && index + 1 < SPEECH_LANGS.length) {
+          moved = true;
+          index += 1;
+          attempt();
+          return;
+        }
+        finish(null);
+      };
+      rec.onend = () => {
+        if (settled || moved) return;
+        finish(null);
+      };
+      try {
+        rec.start();
+      } catch {
+        finish(null);
+      }
+    };
+    attempt();
   });
 }
 
@@ -525,6 +634,7 @@ export function boot(root: HTMLElement, target: Window): void {
     now: () => Date.now(),
     loadToken: () => browserTokens(target).load(),
     capture: () => captureSpeech(target),
+    hasMic: () => Boolean((target as R1Window).SpeechRecognition ?? (target as R1Window).webkitSpeechRecognition),
     speak: postSpeech,
     exit: exitWebView,
     schedule: (delayMs, fire) => {

@@ -13,14 +13,16 @@ export type Gesture =
   | { readonly tag: "idle" }
   | { readonly tag: "side-pending"; readonly sinceMs: number }
   | { readonly tag: "ptt-armed" }
-  | { readonly tag: "awaiting-utterance" };
+  | { readonly tag: "awaiting-utterance" }
+  | { readonly tag: "drafting" };
 
 export type Turn =
   | { readonly tag: "idle" }
   | { readonly tag: "pending"; readonly text: string }
   | { readonly tag: "done"; readonly text: string; readonly reply: string }
   | { readonly tag: "failed" }
-  | { readonly tag: "silent" };
+  | { readonly tag: "silent"; readonly ear?: "r1" }
+  | { readonly tag: "no-mic" };
 
 export type DeviceState = {
   readonly personaId: PersonaId;
@@ -40,7 +42,9 @@ export type DeviceEvent =
   | { readonly type: "sideTimer"; readonly nowMs: number }
   | { readonly type: "longPressStart" }
   | { readonly type: "longPressEnd" }
-  | { readonly type: "utterance"; readonly heard: string | null }
+  | { readonly type: "utterance"; readonly heard: string | null; readonly ear?: "r1" | "absent" }
+  | { readonly type: "toggleDraft" }
+  | { readonly type: "sendDraft" }
   | { readonly type: "toggleSpeaker" }
   | { readonly type: "token"; readonly token: string | null }
   | { readonly type: "reply"; readonly sent: string; readonly reply: string | null }
@@ -156,14 +160,34 @@ function onLongPressEnd(state: DeviceState): DeviceStep {
   };
 }
 
-function onUtterance(state: DeviceState, heard: string | null): DeviceStep {
+function onToggleDraft(state: DeviceState): DeviceStep {
+  if (state.gesture.tag === "ptt-armed" || state.gesture.tag === "awaiting-utterance") return same(state);
+  if (state.gesture.tag === "drafting") return same({ ...state, gesture: { tag: "idle" } });
+  if (state.gesture.tag === "side-pending") {
+    return { state: { ...state, gesture: { tag: "drafting" } }, effects: [{ type: "cancel-wait" }] };
+  }
+  return same({ ...state, gesture: { tag: "drafting" } });
+}
+
+function onSendDraft(state: DeviceState): DeviceStep {
+  if (state.gesture.tag !== "drafting") return same(state);
+  const text = state.composer.trim();
+  if (text === "" || state.turn.tag === "pending") return same({ ...state, gesture: { tag: "idle" } });
+  return submit(state, text);
+}
+
+function onUtterance(state: DeviceState, heard: string | null, ear?: "r1" | "absent"): DeviceStep {
   if (state.gesture.tag !== "awaiting-utterance") return same(state);
+  if (state.turn.tag === "pending") return same({ ...state, gesture: { tag: "idle" } });
+  if (ear === "absent") return same({ ...state, gesture: { tag: "idle" }, turn: { tag: "no-mic" } });
   const text = heard?.trim() ?? "";
   if (text === "") {
-    if (state.turn.tag === "pending") return same({ ...state, gesture: { tag: "idle" } });
-    return same({ ...state, gesture: { tag: "idle" }, turn: { tag: "silent" } });
+    return same({
+      ...state,
+      gesture: { tag: "idle" },
+      turn: ear === "r1" ? { tag: "silent", ear: "r1" } : { tag: "silent" },
+    });
   }
-  if (state.turn.tag === "pending") return same({ ...state, gesture: { tag: "idle" } });
   return submit(state, text);
 }
 
@@ -200,7 +224,7 @@ export function reduceDevice(state: DeviceState, event: DeviceEvent): DeviceStep
       return same({
         ...state,
         composer: event.text,
-        turn: state.turn.tag === "silent" ? { tag: "idle" } : state.turn,
+        turn: state.turn.tag === "silent" || state.turn.tag === "no-mic" ? { tag: "idle" } : state.turn,
       });
     case "token":
       return same({ ...state, token: event.token });
@@ -216,8 +240,12 @@ export function reduceDevice(state: DeviceState, event: DeviceEvent): DeviceStep
       return onLongPressStart(state);
     case "longPressEnd":
       return onLongPressEnd(state);
+    case "toggleDraft":
+      return onToggleDraft(state);
+    case "sendDraft":
+      return onSendDraft(state);
     case "utterance":
-      return onUtterance(state, event.heard);
+      return onUtterance(state, event.heard, event.ear);
     case "reply":
       return onReply(state, event.sent, event.reply);
     default: {

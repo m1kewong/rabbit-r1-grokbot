@@ -1,0 +1,76 @@
+import { describe, expect, it } from "vitest";
+import { readFileSync } from "node:fs";
+import { captureSpeech } from "../src/ui";
+
+type ResultHandler = (event: { results: ArrayLike<ArrayLike<{ transcript: string }>> }) => void;
+type ErrorHandler = (event: { error?: string }) => void;
+
+type Rec = {
+  lang: string;
+  onresult: ResultHandler | null;
+  onerror: ErrorHandler | null;
+  onend: (() => void) | null;
+  start(): void;
+};
+
+function windowWith(RecCtor: new () => Rec): Window {
+  return { SpeechRecognition: RecCtor } as unknown as Window;
+}
+
+describe("captureSpeech", () => {
+  it("asks for zh-HK and keeps an empty result on that language", async () => {
+    const langs: string[] = [];
+    class Rec {
+      lang = "";
+      onresult: ResultHandler | null = null;
+      onerror: ErrorHandler | null = null;
+      onend: (() => void) | null = null;
+      start() {
+        langs.push(this.lang);
+        this.onerror?.({ error: "no-speech" });
+        this.onend?.();
+      }
+    }
+    const heard = await captureSpeech(windowWith(Rec));
+    expect(langs).toEqual(["zh-HK"]);
+    expect(heard).toBeNull();
+    expect(langs).not.toContain("en-US");
+  });
+
+  it("tries yue-HK then zh-TW only when the language is unsupported", async () => {
+    const langs: string[] = [];
+    class Rec {
+      lang = "";
+      onresult: ResultHandler | null = null;
+      onerror: ErrorHandler | null = null;
+      onend: (() => void) | null = null;
+      start() {
+        langs.push(this.lang);
+        if (this.lang === "zh-HK" || this.lang === "yue-HK") {
+          this.onerror?.({ error: "language-not-supported" });
+          this.onend?.();
+          return;
+        }
+        this.onresult?.({ results: [[{ transcript: "你好" }]] });
+      }
+    }
+    const heard = await captureSpeech(windowWith(Rec));
+    expect(langs).toEqual(["zh-HK", "yue-HK", "zh-TW"]);
+    expect(heard).toBe("你好");
+  });
+});
+
+describe("neuron gifs", () => {
+  it("ships looping idle and listen heroes", () => {
+    for (const name of ["neuron-idle.gif", "neuron-listen.gif"]) {
+      const bytes = readFileSync(new URL(`../public/${name}`, import.meta.url));
+      expect(bytes.subarray(0, 6).toString()).toBe("GIF89a");
+      expect(bytes.includes(Buffer.from("NETSCAPE2.0"))).toBe(true);
+      let frames = 0;
+      for (let i = 0; i < bytes.length - 1; i += 1) {
+        if (bytes[i] === 0x21 && bytes[i + 1] === 0xf9) frames += 1;
+      }
+      expect(frames).toBeGreaterThan(1);
+    }
+  });
+});
