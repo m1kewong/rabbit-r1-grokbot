@@ -6,10 +6,20 @@ body {
   font-family: ui-sans-serif, "Segoe UI", sans-serif;
 }
 
-body[data-chrome="bare"] {
+body {
   width: 240px;
   height: 282px;
   overflow: hidden;
+}
+
+body[data-chrome="bezel"],
+body[data-chrome="cockpit"] {
+  width: auto;
+  height: auto;
+  overflow: visible;
+}
+
+body[data-chrome="bare"] {
   background: #000;
 }
 
@@ -390,17 +400,17 @@ input {
   display: none;
 }
 
-.screen:has(.sheet:not([hidden])) .hero {
+.screen.sheet-open .hero {
   transform: translateY(-34px);
 }
 
-.screen:has(.sheet:not([hidden])) .neuron,
-.screen:has(.sheet:not([hidden])) .neuron-gif {
+.screen.sheet-open .neuron,
+.screen.sheet-open .neuron-gif {
   width: 156px;
   height: 156px;
 }
 
-.screen:has(.sheet:not([hidden])) .log {
+.screen.sheet-open .log {
   visibility: hidden;
 }
 

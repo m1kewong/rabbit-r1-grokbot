@@ -10,7 +10,7 @@ export const WSS_PORT = 443 as const;
 export const LAN_PORT = 18789 as const;
 
 const CREATION_TITLE = "Stark R1" as const;
-export const CREATION_URL_VERSION = "20261027-lite" as const;
+export const CREATION_URL_VERSION = "20261027-still" as const;
 const CREATION_DESCRIPTION = "F.R.I.D.A.Y. & Grok Bot Communicator for Rabbit R1" as const;
 const QR_BYTE_LIMIT = 2900;
 
@@ -67,7 +67,7 @@ export function creationQr(origin: string): BuiltQr<CreationQr> {
     title: CREATION_TITLE,
     url: `${base}/?v=${CREATION_URL_VERSION}`,
     description: CREATION_DESCRIPTION,
-    iconUrl: `${base}/icon.svg`,
+    iconUrl: `${base}/icon.png`,
     themeColor: FRAME_COLOR,
   });
 }
@@ -134,7 +134,7 @@ export function validateCreation(text: string): QrCheck {
   if (typeof value.url !== "string" || typeof value.iconUrl !== "string") return { ok: false, reason: "shape" };
   const install = creationInstall(value.url);
   if (!install) return { ok: false, reason: "shape" };
-  if (value.iconUrl !== `${install}/icon.svg`) return { ok: false, reason: "shape" };
+  if (value.iconUrl !== `${install}/icon.png`) return { ok: false, reason: "shape" };
   return { ok: true };
 }
 
