@@ -79,4 +79,94 @@ describe("startDrive", () => {
     expect(screens.at(-1)?.personaId).toBe("friday");
     drive.control("exit");
   });
+
+  it("does not post a hold that returns no speech", async () => {
+    const calls: string[] = [];
+    vi.stubGlobal("fetch", async (_url: string, init?: RequestInit) => {
+      const body = JSON.parse(String(init?.body)) as { message: string };
+      calls.push(body.message);
+      return new Response(
+        JSON.stringify({
+          ok: true,
+          reply: "no",
+          model: "local-friday",
+          personaId: "friday",
+          routedToGrokBot: false,
+        }),
+      );
+    });
+    const drive = startDrive({
+      now: () => 0,
+      loadToken: () => Promise.resolve(null),
+      capture: () => Promise.resolve(null),
+      speak() {},
+      exit() {},
+      schedule: () => () => {},
+      render() {},
+    });
+    drive.control("longPressStart");
+    drive.control("longPressEnd");
+    await Promise.resolve();
+    await Promise.resolve();
+    expect(calls).toEqual([]);
+  });
+
+  it("starts native speech on hold and posts only an sttEnded transcript", async () => {
+    const calls: string[] = [];
+    const posts: string[] = [];
+    let onPluginMessage: ((data: unknown) => void) | undefined;
+    const pluginTarget = {
+      CreationVoiceHandler: {
+        postMessage(message: string) {
+          posts.push(message);
+        },
+      },
+      get onPluginMessage() {
+        return onPluginMessage;
+      },
+      set onPluginMessage(handler: ((data: unknown) => void) | undefined) {
+        onPluginMessage = handler;
+      },
+    };
+    vi.stubGlobal("fetch", async (_url: string, init?: RequestInit) => {
+      const body = JSON.parse(String(init?.body)) as { message: string };
+      calls.push(body.message);
+      return new Response(
+        JSON.stringify({
+          ok: true,
+          reply: "Bay open",
+          model: "grok-4",
+          personaId: "friday",
+          routedToGrokBot: true,
+        }),
+      );
+    });
+    const drive = startDrive({
+      now: () => 0,
+      loadToken: () => Promise.resolve(null),
+      capture: () => Promise.reject(new Error("web speech should stay unused")),
+      speak() {},
+      exit() {},
+      schedule: () => () => {},
+      render() {},
+      pluginTarget: pluginTarget as { onPluginMessage?: (data: unknown) => void },
+    });
+    onPluginMessage?.({ type: "sttEnded", transcript: "too early" });
+    expect(calls).toEqual([]);
+    drive.control("longPressStart");
+    expect(posts).toEqual(["start"]);
+    onPluginMessage?.({ type: "llm", message: "Give me a status report." });
+    onPluginMessage?.({ transcript: "sneaky" });
+    drive.control("longPressEnd");
+    expect(posts).toEqual(["start", "stop"]);
+    await Promise.resolve();
+    expect(calls).toEqual([]);
+    onPluginMessage?.({ type: "sttEnded", transcript: "   " });
+    await Promise.resolve();
+    expect(calls).toEqual([]);
+    drive.control("longPressStart");
+    drive.control("longPressEnd");
+    onPluginMessage?.(JSON.stringify({ type: "sttEnded", transcript: "open the bay" }));
+    await vi.waitFor(() => expect(calls).toEqual(["[R1 -> F.R.I.D.A.Y.] open the bay"]));
+  });
 });

@@ -124,6 +124,29 @@ describe("reduceDevice", () => {
     expect(missing.effects[0]).toMatchObject({ type: "submit", text: "hold this" });
   });
 
+  it("aborts a hold that hears nothing and keeps the unsent draft", () => {
+    const drafted = reduceDevice(initialDevice(), { type: "composer", text: "draft" }).state;
+    const released = reduceDevice(
+      reduceDevice(drafted, { type: "longPressStart" }).state,
+      { type: "longPressEnd" },
+    );
+    const missing = reduceDevice(released.state, { type: "utterance", heard: null });
+    const blank = reduceDevice(released.state, { type: "utterance", heard: "   " });
+    const heard = reduceDevice(released.state, { type: "utterance", heard: "lights" });
+    expect(missing.effects).toEqual([]);
+    expect(blank.effects).toEqual([]);
+    expect(missing.state.transcript).toEqual([]);
+    expect(blank.state.transcript).toEqual([]);
+    expect(missing.state.composer).toBe("draft");
+    expect(blank.state.composer).toBe("draft");
+    expect(missing.state.gesture).toEqual({ tag: "idle" });
+    expect(missing.state.turn).toEqual({ tag: "silent" });
+    expect(heard.effects).toEqual([
+      { type: "submit", text: "lights", personaId: "friday", history: [] },
+    ]);
+    expect(heard.state.composer).toBe("");
+  });
+
   it("emits the Rabbit speech payload only when the speaker is on", () => {
     const pending = reduceDevice(arm(initialDevice(), 0), { type: "sideTimer", nowMs: 250 }).state;
     const quiet = reduceDevice(pending, { type: "reply", sent: pending.turn.tag === "pending" ? pending.turn.text : "", reply: "Ready" });

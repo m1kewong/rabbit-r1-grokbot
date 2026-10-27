@@ -32,6 +32,17 @@ describe("creation QR", () => {
     if (stripped.ok) expect(stripped.text).toBe(built.text);
   });
 
+  it("cache-busts the creation install url and leaves the icon url alone", () => {
+    const built = creationQr("https://r1.example");
+    expect(built.ok).toBe(true);
+    if (!built.ok) return;
+    const url = new URL(built.value.url);
+    expect(`${url.origin}${url.pathname}`).toBe("https://r1.example/");
+    expect(url.search).toBe("?v=20261027-ptt");
+    expect(built.value.iconUrl).toBe("https://r1.example/icon.svg");
+    expect(validateCreation(built.text)).toEqual({ ok: true });
+  });
+
   it("rejects a payload of 2900 bytes or more", () => {
     expect(validateCreation("x".repeat(2900))).toEqual({ ok: false, reason: "too-long" });
     expect(validateCreation("x".repeat(2901))).toEqual({ ok: false, reason: "too-long" });
