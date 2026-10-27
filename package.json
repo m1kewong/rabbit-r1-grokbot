@@ -1,0 +1,31 @@
+{
+  "name": "rabbit-r1-grokbot",
+  "private": true,
+  "type": "module",
+  "scripts": {
+    "dev": "vite",
+    "build": "tsc --noEmit && eslint . --max-warnings 0 && vite build",
+    "test": "vitest run",
+    "generate:qr": "tsx scripts/generate-qr.ts",
+    "serve": "tsx scripts/serve-gateway.ts",
+    "capture": "tsx scripts/capture-screenshots.ts"
+  },
+  "devDependencies": {
+    "@eslint/js": "^10.0.1",
+    "@types/node": "^26.6.5",
+    "@types/pngjs": "^6.0.5",
+    "@types/qrcode": "^1.5.6",
+    "@types/ws": "^8.18.2",
+    "eslint": "^10.13.0",
+    "globals": "^17.13.0",
+    "playwright": "^1.64.1",
+    "pngjs": "^7.0.0",
+    "qrcode": "^1.5.4",
+    "tsx": "^4.23.15",
+    "typescript": "^6.0.3",
+    "typescript-eslint": "^8.72.1",
+    "vite": "^8.3.5",
+    "vitest": "^5.0.5",
+    "ws": "^8.22.0"
+  }
+}
