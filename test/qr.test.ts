@@ -6,6 +6,7 @@ import {
   openClawForLocation,
   openClawLan,
   openClawWss,
+  renderPng,
   validateCreation,
   validateOpenClaw,
   WSS_PORT,
@@ -45,6 +46,16 @@ describe("creation QR", () => {
     expect(validateCreation("{")).toEqual({ ok: false, reason: "json" });
     const drifted = { ...CREATION, themeColor: "#000000" };
     expect(validateCreation(JSON.stringify(drifted))).toEqual({ ok: false, reason: "shape" });
+  });
+});
+
+describe("QR png", () => {
+  it("renders a PNG", async () => {
+    const built = creationQr("https://r1.example");
+    expect(built.ok).toBe(true);
+    if (!built.ok) return;
+    const png = await renderPng(built.text);
+    expect(Buffer.from(png.subarray(0, 8)).toString("hex")).toBe("89504e470d0a1a0a");
   });
 });
 
