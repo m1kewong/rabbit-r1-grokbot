@@ -100,28 +100,23 @@ describe("reduceDevice", () => {
     });
   });
 
-  it("captures speech on long-press release and sends heard text or the fallback", () => {
+  it("starts a hold without sending and ignores a second start", () => {
     const idleEnd = reduceDevice(initialDevice(), { type: "longPressEnd" });
     expect(idleEnd.effects).toEqual([]);
     expect(idleEnd.state.gesture).toEqual({ tag: "idle" });
     const armed = reduceDevice(initialDevice(), { type: "longPressStart" });
     expect(armed.state.gesture).toEqual({ tag: "ptt-armed" });
-    expect(armed.effects).toEqual([]);
-    const held = reduceDevice(
-      reduceDevice(initialDevice(), { type: "composer", text: "hold this" }).state,
-      { type: "longPressStart" },
-    ).state;
-    const released = reduceDevice(held, { type: "longPressEnd" });
-    expect(released.effects).toEqual([{ type: "capture-speech" }]);
-    expect(released.state.gesture).toEqual({ tag: "awaiting-utterance", fallback: "hold this" });
-    const heard = reduceDevice(released.state, { type: "utterance", heard: "lights" });
-    expect(heard.effects).toEqual([
-      { type: "submit", text: "lights", personaId: "friday", history: [] },
-    ]);
-    const blank = reduceDevice(released.state, { type: "utterance", heard: "   " });
-    const missing = reduceDevice(released.state, { type: "utterance", heard: null });
-    expect(blank.effects[0]).toMatchObject({ type: "submit", text: "hold this" });
-    expect(missing.effects[0]).toMatchObject({ type: "submit", text: "hold this" });
+    expect(armed.effects).toEqual([{ type: "ptt-start" }]);
+    expect(reduceDevice(armed.state, { type: "longPressStart" }).effects).toEqual([]);
+    const released = reduceDevice(armed.state, { type: "longPressEnd" });
+    expect(released.effects).toEqual([{ type: "ptt-stop" }]);
+    expect(released.state.gesture).toEqual({ tag: "awaiting-utterance" });
+    const clicked = reduceDevice(initialDevice(), { type: "sideClick", nowMs: 50 });
+    const over = reduceDevice(clicked.state, { type: "longPressStart" });
+    expect(over.effects).toEqual([{ type: "cancel-wait" }, { type: "ptt-start" }]);
+    const late = reduceDevice(over.state, { type: "sideTimer", nowMs: 300 });
+    expect(late.effects).toEqual([]);
+    expect(late.state.gesture).toEqual({ tag: "ptt-armed" });
   });
 
   it("aborts a hold that hears nothing and keeps the unsent draft", () => {

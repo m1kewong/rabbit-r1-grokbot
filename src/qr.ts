@@ -10,6 +10,7 @@ export const WSS_PORT = 443 as const;
 export const LAN_PORT = 18789 as const;
 
 const CREATION_TITLE = "Stark R1" as const;
+const CREATION_URL_VERSION = "20261027-ptt" as const;
 const CREATION_DESCRIPTION = "F.R.I.D.A.Y. & Grok Bot Communicator for Rabbit R1" as const;
 const QR_BYTE_LIMIT = 2900;
 
@@ -64,7 +65,7 @@ export function creationQr(origin: string): BuiltQr<CreationQr> {
   const base = originBase(origin);
   return finish({
     title: CREATION_TITLE,
-    url: `${base}/`,
+    url: `${base}/?v=${CREATION_URL_VERSION}`,
     description: CREATION_DESCRIPTION,
     iconUrl: `${base}/icon.svg`,
     themeColor: FRAME_COLOR,
@@ -105,6 +106,18 @@ function isRecord(value: unknown): value is Record<string, unknown> {
   return typeof value === "object" && value !== null && !Array.isArray(value);
 }
 
+function creationInstall(url: string): string | null {
+  let parsed: URL;
+  try {
+    parsed = new URL(url);
+  } catch {
+    return null;
+  }
+  if (parsed.username !== "" || parsed.password !== "" || parsed.hash !== "") return null;
+  if (parsed.pathname !== "/" || parsed.search !== `?v=${CREATION_URL_VERSION}`) return null;
+  return parsed.origin;
+}
+
 export function validateCreation(text: string): QrCheck {
   if (utf8Length(text) >= QR_BYTE_LIMIT) return { ok: false, reason: "too-long" };
   let value: unknown;
@@ -118,8 +131,10 @@ export function validateCreation(text: string): QrCheck {
   if (value.title !== CREATION_TITLE) return { ok: false, reason: "shape" };
   if (value.description !== CREATION_DESCRIPTION) return { ok: false, reason: "shape" };
   if (value.themeColor !== FRAME_COLOR) return { ok: false, reason: "shape" };
-  if (typeof value.url !== "string" || !value.url.endsWith("/")) return { ok: false, reason: "shape" };
-  if (value.iconUrl !== `${value.url}icon.svg`) return { ok: false, reason: "shape" };
+  if (typeof value.url !== "string" || typeof value.iconUrl !== "string") return { ok: false, reason: "shape" };
+  const install = creationInstall(value.url);
+  if (!install) return { ok: false, reason: "shape" };
+  if (value.iconUrl !== `${install}/icon.svg`) return { ok: false, reason: "shape" };
   return { ok: true };
 }
 

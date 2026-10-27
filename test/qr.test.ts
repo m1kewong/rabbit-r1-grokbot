@@ -14,7 +14,7 @@ import {
 
 const CREATION = {
   title: "Stark R1",
-  url: "https://r1.example/",
+  url: "https://r1.example/?v=20261027-ptt",
   description: "F.R.I.D.A.Y. & Grok Bot Communicator for Rabbit R1",
   iconUrl: "https://r1.example/icon.svg",
   themeColor: FRAME_COLOR,
@@ -57,6 +57,8 @@ describe("creation QR", () => {
     expect(validateCreation("{")).toEqual({ ok: false, reason: "json" });
     const drifted = { ...CREATION, themeColor: "#000000" };
     expect(validateCreation(JSON.stringify(drifted))).toEqual({ ok: false, reason: "shape" });
+    const stale = { ...CREATION, url: "https://r1.example/" };
+    expect(validateCreation(JSON.stringify(stale))).toEqual({ ok: false, reason: "shape" });
   });
 });
 

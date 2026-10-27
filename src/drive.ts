@@ -17,7 +17,17 @@ export type DrivePorts = {
   schedule(delayMs: number, fire: () => void): () => void;
   render(state: DeviceState, dispatch: (event: DeviceEvent) => void): void;
   viewport?: { addEventListener(type: "resize", listener: () => void): void };
-  pluginTarget?: { onPluginMessage?: (data: unknown) => void };
+  pluginTarget?: {
+    onPluginMessage?: (data: unknown) => void;
+    CreationVoiceHandler?: { postMessage(message: string): void };
+  };
+};
+
+type ListenSession = {
+  native: boolean;
+  stopped: boolean;
+  transcript: string | null;
+  pending: Promise<string | null> | null;
 };
 
 type ReplySlot = {
@@ -34,6 +44,7 @@ export function startDrive(ports: DrivePorts): {
   const queue: DeviceEvent[] = [];
   let pumping = false;
   let cancelTimer: (() => void) | null = null;
+  let listen: ListenSession | null = null;
   const slots: ReplySlot[] = [];
 
   const dispatch = (event: DeviceEvent): void => {
@@ -95,10 +106,11 @@ export function startDrive(ports: DrivePorts): {
         });
         break;
       }
-      case "capture-speech":
-        void ports.capture().then((heard) => {
-          dispatch({ type: "utterance", heard });
-        });
+      case "ptt-start":
+        beginListen();
+        break;
+      case "ptt-stop":
+        endListen();
         break;
       case "speak":
         ports.speak(effect.payload);
@@ -113,10 +125,78 @@ export function startDrive(ports: DrivePorts): {
     }
   }
 
+  function voiceHandler(): { postMessage(message: string): void } | null {
+    const handler = ports.pluginTarget?.CreationVoiceHandler;
+    if (!handler || typeof handler.postMessage !== "function") return null;
+    return handler;
+  }
+
+  function deliver(session: ListenSession, heard: string | null): void {
+    if (listen !== session) return;
+    listen = null;
+    dispatch({ type: "utterance", heard });
+  }
+
+  function beginListen(): void {
+    const handler = voiceHandler();
+    if (handler) {
+      const session: ListenSession = { native: true, stopped: false, transcript: null, pending: null };
+      listen = session;
+      try {
+        handler.postMessage("start");
+      } catch {
+        session.transcript = "";
+      }
+      return;
+    }
+    const session: ListenSession = {
+      native: false,
+      stopped: false,
+      transcript: null,
+      pending: ports.capture(),
+    };
+    listen = session;
+    void session.pending?.then(
+      (heard) => {
+        if (listen !== session) return;
+        session.transcript = heard ?? "";
+        if (session.stopped) deliver(session, session.transcript);
+      },
+      () => {
+        if (listen !== session) return;
+        session.transcript = "";
+        if (session.stopped) deliver(session, "");
+      },
+    );
+  }
+
+  function endListen(): void {
+    const session = listen;
+    if (!session) {
+      dispatch({ type: "utterance", heard: null });
+      return;
+    }
+    session.stopped = true;
+    if (session.native) {
+      try {
+        voiceHandler()?.postMessage("stop");
+      } catch {
+        deliver(session, session.transcript ?? "");
+        return;
+      }
+      if (session.transcript !== null) deliver(session, session.transcript);
+      return;
+    }
+    if (session.transcript !== null) deliver(session, session.transcript);
+  }
+
   if (ports.pluginTarget) {
     ports.pluginTarget.onPluginMessage = (data: unknown) => {
-      const heard = pluginText(data);
-      if (heard !== null) dispatch({ type: "utterance", heard });
+      const transcript = readSttEnded(data);
+      if (transcript === undefined) return;
+      const session = listen;
+      if (!session?.native || !session.stopped) return;
+      deliver(session, transcript);
     };
   }
   ports.viewport?.addEventListener("resize", () => {
@@ -160,21 +240,22 @@ function controlEvent(name: string, nowMs: number): DeviceEvent | null {
   }
 }
 
-function pluginText(data: unknown): string | null {
+function readSttEnded(data: unknown): string | undefined {
+  const record = pluginRecord(data);
+  if (!record || record.type !== "sttEnded") return undefined;
+  return typeof record.transcript === "string" ? record.transcript : "";
+}
+
+function pluginRecord(data: unknown): Record<string, unknown> | null {
   if (typeof data === "string") {
     const trimmed = data.trim();
     if (trimmed === "") return null;
     try {
-      return pluginText(JSON.parse(trimmed) as unknown);
+      return pluginRecord(JSON.parse(trimmed) as unknown);
     } catch {
-      return trimmed;
+      return null;
     }
   }
-  if (typeof data !== "object" || data === null) return null;
-  const record = data as Record<string, unknown>;
-  for (const key of ["transcript", "message", "text"]) {
-    const value = record[key];
-    if (typeof value === "string" && value.trim() !== "") return value;
-  }
-  return null;
+  if (typeof data !== "object" || data === null || Array.isArray(data)) return null;
+  return data as Record<string, unknown>;
 }
