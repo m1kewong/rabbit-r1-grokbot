@@ -13,13 +13,14 @@ export type Gesture =
   | { readonly tag: "idle" }
   | { readonly tag: "side-pending"; readonly sinceMs: number }
   | { readonly tag: "ptt-armed" }
-  | { readonly tag: "awaiting-utterance"; readonly fallback: string };
+  | { readonly tag: "awaiting-utterance" };
 
 export type Turn =
   | { readonly tag: "idle" }
   | { readonly tag: "pending"; readonly text: string }
   | { readonly tag: "done"; readonly text: string; readonly reply: string }
-  | { readonly tag: "failed" };
+  | { readonly tag: "failed" }
+  | { readonly tag: "silent" };
 
 export type DeviceState = {
   readonly personaId: PersonaId;
@@ -65,7 +66,8 @@ export type DeviceEffect =
       readonly fireAtMs: number;
       readonly delayMs: typeof SIDE_CLICK_MS;
     }
-  | { readonly type: "capture-speech" }
+  | { readonly type: "ptt-start" }
+  | { readonly type: "ptt-stop" }
   | { readonly type: "cancel-wait" }
   | { readonly type: "closeWebView" };
 
@@ -140,21 +142,27 @@ function onLongPressStart(state: DeviceState): DeviceStep {
   const cancel = state.gesture.tag === "side-pending";
   return {
     state: { ...state, gesture: { tag: "ptt-armed" } },
-    effects: cancel ? [{ type: "cancel-wait" }] : [],
+    effects: cancel
+      ? [{ type: "cancel-wait" }, { type: "ptt-start" }]
+      : [{ type: "ptt-start" }],
   };
 }
 
 function onLongPressEnd(state: DeviceState): DeviceStep {
   if (state.gesture.tag !== "ptt-armed") return same(state);
   return {
-    state: { ...state, gesture: { tag: "awaiting-utterance", fallback: promptText(state) } },
-    effects: [{ type: "capture-speech" }],
+    state: { ...state, gesture: { tag: "awaiting-utterance" } },
+    effects: [{ type: "ptt-stop" }],
   };
 }
 
 function onUtterance(state: DeviceState, heard: string | null): DeviceStep {
   if (state.gesture.tag !== "awaiting-utterance") return same(state);
-  const text = heard !== null && heard.trim() !== "" ? heard : state.gesture.fallback;
+  const text = heard?.trim() ?? "";
+  if (text === "") {
+    if (state.turn.tag === "pending") return same({ ...state, gesture: { tag: "idle" } });
+    return same({ ...state, gesture: { tag: "idle" }, turn: { tag: "silent" } });
+  }
   if (state.turn.tag === "pending") return same({ ...state, gesture: { tag: "idle" } });
   return submit(state, text);
 }
@@ -189,7 +197,11 @@ export function reduceDevice(state: DeviceState, event: DeviceEvent): DeviceStep
     case "scroll":
       return same({ ...state, personaId: neighbor(state.personaId, event.direction) });
     case "composer":
-      return same({ ...state, composer: event.text });
+      return same({
+        ...state,
+        composer: event.text,
+        turn: state.turn.tag === "silent" ? { tag: "idle" } : state.turn,
+      });
     case "token":
       return same({ ...state, token: event.token });
     case "toggleSpeaker":

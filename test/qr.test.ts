@@ -14,7 +14,7 @@ import {
 
 const CREATION = {
   title: "Stark R1",
-  url: "https://r1.example/",
+  url: "https://r1.example/?v=20261027-ptt",
   description: "F.R.I.D.A.Y. & Grok Bot Communicator for Rabbit R1",
   iconUrl: "https://r1.example/icon.svg",
   themeColor: FRAME_COLOR,
@@ -32,6 +32,17 @@ describe("creation QR", () => {
     if (stripped.ok) expect(stripped.text).toBe(built.text);
   });
 
+  it("cache-busts the creation install url and leaves the icon url alone", () => {
+    const built = creationQr("https://r1.example");
+    expect(built.ok).toBe(true);
+    if (!built.ok) return;
+    const url = new URL(built.value.url);
+    expect(`${url.origin}${url.pathname}`).toBe("https://r1.example/");
+    expect(url.search).toBe("?v=20261027-ptt");
+    expect(built.value.iconUrl).toBe("https://r1.example/icon.svg");
+    expect(validateCreation(built.text)).toEqual({ ok: true });
+  });
+
   it("rejects a payload of 2900 bytes or more", () => {
     expect(validateCreation("x".repeat(2900))).toEqual({ ok: false, reason: "too-long" });
     expect(validateCreation("x".repeat(2901))).toEqual({ ok: false, reason: "too-long" });
@@ -46,6 +57,8 @@ describe("creation QR", () => {
     expect(validateCreation("{")).toEqual({ ok: false, reason: "json" });
     const drifted = { ...CREATION, themeColor: "#000000" };
     expect(validateCreation(JSON.stringify(drifted))).toEqual({ ok: false, reason: "shape" });
+    const stale = { ...CREATION, url: "https://r1.example/" };
+    expect(validateCreation(JSON.stringify(stale))).toEqual({ ok: false, reason: "shape" });
   });
 });
 

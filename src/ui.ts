@@ -15,6 +15,7 @@ export type ChromeMode = "bare" | "bezel" | "cockpit";
 
 type R1Window = Window & {
   closeWebView?: { postMessage(message: string): void };
+  CreationVoiceHandler?: { postMessage(message: string): void };
   PluginMessageHandler?: { postMessage(message: string): void };
   onPluginMessage?: (data: unknown) => void;
   creationStorage?: {
@@ -49,7 +50,6 @@ const chrome: ChromeFields = {
 let qrCache: { key: string; creation: string; openclaw: string } | null = null;
 let healthStarted = false;
 let wired = false;
-let caret: { id: string; pos: number } | null = null;
 
 export function chromeMode(input: {
   readonly path: string;
@@ -76,9 +76,17 @@ function healthText(status: HealthView): string {
   return "Gateway unreachable";
 }
 
-function screenMarkup(state: DeviceState, persona: Persona): string {
-  const accent = persona.accents[0];
-  const dots = PERSONAS.map((item) => `<i class="${item.id === state.personaId ? "on" : ""}"></i>`).join("");
+function statusMarkup(state: DeviceState): string {
+  if (state.gesture.tag === "ptt-armed" || state.gesture.tag === "awaiting-utterance") {
+    return `<p class="line pending"><span>Mic</span>Listening</p>`;
+  }
+  if (state.turn.tag === "pending") return `<p class="line pending"><span>Link</span>Sending</p>`;
+  if (state.turn.tag === "failed") return `<p class="line failed"><span>Link</span>No reply</p>`;
+  if (state.turn.tag === "silent") return `<p class="line failed"><span>Mic</span>No speech</p>`;
+  return "";
+}
+
+function logMarkup(state: DeviceState, persona: Persona): string {
   const lines =
     state.transcript.length === 0
       ? `<p class="hint">Side click sends. Hold Side to talk.</p>`
@@ -88,13 +96,14 @@ function screenMarkup(state: DeviceState, persona: Persona): string {
             return `<p class="line ${turn.role}"><span>${escapeHtml(who)}</span>${escapeHtml(turn.content)}</p>`;
           })
           .join("");
-  const status =
-    state.turn.tag === "pending"
-      ? `<p class="line pending"><span>Link</span>Sending</p>`
-      : state.turn.tag === "failed"
-        ? `<p class="line failed"><span>Link</span>No reply</p>`
-        : "";
-  return `<section class="screen" data-screen="stark-r1" style="${SCREEN_STYLE}">
+  return `${lines}${statusMarkup(state)}`;
+}
+
+function screenMarkup(state: DeviceState, persona: Persona, mark: "bare" | null): string {
+  const accent = persona.accents[0];
+  const dots = PERSONAS.map((item) => `<i class="${item.id === state.personaId ? "on" : ""}"></i>`).join("");
+  const paintAttr = mark === "bare" ? ` data-paint="bare"` : "";
+  return `<section class="screen"${paintAttr} data-screen="stark-r1" style="${SCREEN_STYLE}">
     <header class="top">
       <div class="brand">
         <svg class="bolt" viewBox="0 0 16 16" aria-hidden="true"><circle cx="8" cy="8" r="5.2" fill="none" stroke="#FE5000" stroke-width="1.6"/><circle cx="8" cy="8" r="1.6" fill="#F59E0B"/></svg>
@@ -108,21 +117,22 @@ function screenMarkup(state: DeviceState, persona: Persona): string {
     <div class="who">
       <i class="accent" style="background:${accent}"></i>
       <div>
-        <h1 style="color:${accent}">${escapeHtml(persona.label)}</h1>
-        <p>${escapeHtml(persona.role)}</p>
-        <div class="ticks">${dots}</div>
+        <h1 data-bind="label" style="color:${accent}">${escapeHtml(persona.label)}</h1>
+        <p data-bind="role">${escapeHtml(persona.role)}</p>
+        <div class="ticks" data-bind="ticks">${dots}</div>
       </div>
     </div>
-    <div class="log">${lines}${status}</div>
-    <p class="preset"><span>Preset</span>${escapeHtml(presetById(state.presetId).text)}</p>
+    <div class="log" data-bind="log">${logMarkup(state, persona)}</div>
+    <p class="preset" data-bind="preset"><span>Preset</span>${escapeHtml(presetById(state.presetId).text)}</p>
     <input id="composer" class="composer" aria-label="Message" value="${escapeHtml(state.composer)}" />
     <button type="button" class="side" data-ptt="1">Side</button>
   </section>`;
 }
 
-function bezelMarkup(state: DeviceState, persona: Persona): string {
-  return `<div class="bezel">
-    ${screenMarkup(state, persona)}
+function bezelMarkup(state: DeviceState, persona: Persona, mark: boolean): string {
+  const paintAttr = mark ? ` data-paint="bezel"` : "";
+  return `<div class="bezel"${paintAttr}>
+    ${screenMarkup(state, persona, null)}
     <div class="bezel-keys">
       <button type="button" data-control="scroll-up">Scroll Up</button>
       <button type="button" data-control="scroll-down">Scroll Down</button>
@@ -133,7 +143,7 @@ function bezelMarkup(state: DeviceState, persona: Persona): string {
 
 function cockpitMarkup(state: DeviceState, persona: Persona, target: Window): string {
   const cached = qrCache?.key === qrKey(target) ? qrCache : null;
-  return `<div class="cockpit">
+  return `<div class="cockpit" data-paint="cockpit">
     <header class="cockpit-head">
       <div>
         <h1>Stark R1</h1>
@@ -166,7 +176,7 @@ function cockpitMarkup(state: DeviceState, persona: Persona, target: Window): st
           </label>
         </form>
       </div>
-      <div class="sim">${bezelMarkup(state, persona)}</div>
+      <div class="sim">${bezelMarkup(state, persona, false)}</div>
     </div>
   </div>`;
 }
@@ -208,16 +218,56 @@ function ensureHealth(target: Window): void {
   target.setInterval(pull, 10_000);
 }
 
-function restoreCaret(root: HTMLElement): void {
-  const id = caret?.id ?? "";
-  const pos = caret?.pos ?? null;
-  caret = null;
-  if (!id) return;
-  const next = root.querySelector(`#${id}`);
-  if (!(next instanceof HTMLInputElement)) return;
-  next.focus();
-  const point = pos ?? next.value.length;
-  next.setSelectionRange(point, point);
+function writeLog(node: HTMLElement, state: DeviceState, persona: Persona): void {
+  const html = logMarkup(state, persona);
+  if (node.dataset.rendered === html) return;
+  node.dataset.rendered = html;
+  node.innerHTML = html;
+}
+
+function setPreset(node: Element, text: string): void {
+  const label = node.querySelector("span");
+  const next = label?.nextSibling ?? null;
+  if (next?.nodeType === Node.TEXT_NODE) {
+    if (next.textContent !== text) next.textContent = text;
+    return;
+  }
+  node.append(text);
+}
+
+function syncComposer(input: HTMLInputElement, value: string): void {
+  const active = input.ownerDocument.activeElement;
+  if (input.value === value) return;
+  input.value = value;
+  if (input === active && value === "") input.blur();
+}
+
+function applyLive(scope: ParentNode, state: DeviceState, persona: Persona): void {
+  const accent = persona.accents[0];
+  const label = scope.querySelector("[data-bind=label]");
+  if (label instanceof HTMLElement) {
+    label.textContent = persona.label;
+    label.style.color = accent;
+  }
+  const role = scope.querySelector("[data-bind=role]");
+  if (role) role.textContent = persona.role;
+  const bar = scope.querySelector(".accent");
+  if (bar instanceof HTMLElement) bar.style.background = accent;
+  const ticks = scope.querySelector("[data-bind=ticks]");
+  if (ticks) {
+    const marks = ticks.querySelectorAll("i");
+    PERSONAS.forEach((item, index) => {
+      marks.item(index)?.classList.toggle("on", item.id === state.personaId);
+    });
+  }
+  const log = scope.querySelector("[data-bind=log]");
+  if (log instanceof HTMLElement) writeLog(log, state, persona);
+  const preset = scope.querySelector("[data-bind=preset]");
+  if (preset) setPreset(preset, presetById(state.presetId).text);
+  const speaker = scope.querySelector("[data-control=speaker]");
+  if (speaker instanceof HTMLElement) speaker.setAttribute("aria-pressed", state.speakerOn ? "true" : "false");
+  const composer = scope.querySelector("#composer");
+  if (composer instanceof HTMLInputElement) syncComposer(composer, state.composer);
 }
 
 function wire(root: HTMLElement, target: Window, dispatch: (event: DeviceEvent) => void): void {
@@ -267,7 +317,6 @@ function wire(root: HTMLElement, target: Window, dispatch: (event: DeviceEvent) 
   root.addEventListener("input", (event) => {
     const node = event.target;
     if (!(node instanceof HTMLInputElement)) return;
-    caret = { id: node.id, pos: node.selectionStart ?? node.value.length };
     if (node.id === "composer") dispatch({ type: "composer", text: node.value });
     if (node.id === "bridge-url" || node.id === "gateway-token") {
       if (node.id === "bridge-url") chrome.bridgeUrl = node.value;
@@ -290,14 +339,17 @@ export function paint(root: HTMLElement, target: Window, state: DeviceState, dis
     viewportWidth: target.innerWidth,
   });
   target.document.body.dataset.chrome = mode;
-  const html =
-    mode === "cockpit"
-      ? cockpitMarkup(state, persona, target)
-      : mode === "bezel"
-        ? bezelMarkup(state, persona)
-        : screenMarkup(state, persona);
-  root.innerHTML = html;
-  restoreCaret(root);
+  const live = root.querySelector(`[data-paint="${mode}"]`);
+  if (live instanceof HTMLElement) {
+    applyLive(live, state, persona);
+  } else {
+    root.innerHTML =
+      mode === "cockpit"
+        ? cockpitMarkup(state, persona, target)
+        : mode === "bezel"
+          ? bezelMarkup(state, persona, true)
+          : screenMarkup(state, persona, "bare");
+  }
   wire(root, target, dispatch);
   if (mode === "cockpit") {
     ensureQr(target);
