@@ -14,9 +14,9 @@ import {
 
 const CREATION = {
   title: "Stark R1",
-  url: "https://r1.example/?v=20261027-lite",
+  url: "https://r1.example/?v=20261027-still",
   description: "F.R.I.D.A.Y. & Grok Bot Communicator for Rabbit R1",
-  iconUrl: "https://r1.example/icon.svg",
+  iconUrl: "https://r1.example/icon.png",
   themeColor: FRAME_COLOR,
 };
 
@@ -32,14 +32,14 @@ describe("creation QR", () => {
     if (stripped.ok) expect(stripped.text).toBe(built.text);
   });
 
-  it("cache-busts the creation install url and leaves the icon url alone", () => {
+  it("cache-busts the creation install url and points the icon at a png", () => {
     const built = creationQr("https://r1.example");
     expect(built.ok).toBe(true);
     if (!built.ok) return;
     const url = new URL(built.value.url);
     expect(`${url.origin}${url.pathname}`).toBe("https://r1.example/");
-    expect(url.search).toBe("?v=20261027-lite");
-    expect(built.value.iconUrl).toBe("https://r1.example/icon.svg");
+    expect(url.search).toBe("?v=20261027-still");
+    expect(built.value.iconUrl).toBe("https://r1.example/icon.png");
     expect(validateCreation(built.text)).toEqual({ ok: true });
   });
 
