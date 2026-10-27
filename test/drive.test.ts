@@ -58,7 +58,7 @@ describe("startDrive", () => {
     drive.control("sideClick");
     timers.at(-1)?.fire();
     await vi.waitFor(() =>
-      expect(calls.map((call) => call.message)).toEqual(["[R1 -> F.R.I.D.A.Y.] Brief me on what matters today."]),
+      expect(calls.map((call) => call.message)).toEqual(["Brief me on what matters today."]),
     );
     await vi.waitFor(() =>
       expect(spoken).toEqual([{ message: "First", useLLM: true, wantsR1Response: true, wantsJournalEntry: false }]),
@@ -66,7 +66,7 @@ describe("startDrive", () => {
 
     drive.control("longPressStart");
     drive.control("longPressEnd");
-    await vi.waitFor(() => expect(calls.map((call) => call.message)).toContain("[R1 -> F.R.I.D.A.Y.] lights"));
+    await vi.waitFor(() => expect(calls.map((call) => call.message)).toContain("lights"));
     await vi.waitFor(() =>
       expect(spoken).toEqual([
         { message: "First", useLLM: true, wantsR1Response: true, wantsJournalEntry: false },
@@ -167,6 +167,108 @@ describe("startDrive", () => {
     drive.control("longPressStart");
     drive.control("longPressEnd");
     onPluginMessage?.(JSON.stringify({ type: "sttEnded", transcript: "open the bay" }));
-    await vi.waitFor(() => expect(calls).toEqual(["[R1 -> F.R.I.D.A.Y.] open the bay"]));
+    await vi.waitFor(() => expect(calls).toEqual(["open the bay"]));
+  });
+
+  it("posts Cantonese that arrives before stop, and after stop", async () => {
+    const calls: string[] = [];
+    const posts: string[] = [];
+    let onPluginMessage: ((data: unknown) => void) | undefined;
+    const pluginTarget = {
+      CreationVoiceHandler: { postMessage(message: string) { posts.push(message); } },
+      get onPluginMessage() { return onPluginMessage; },
+      set onPluginMessage(handler: ((data: unknown) => void) | undefined) { onPluginMessage = handler; },
+    };
+    vi.stubGlobal("fetch", async (_url: string, init?: RequestInit) => {
+      calls.push((JSON.parse(String(init?.body)) as { message: string }).message);
+      return new Response(JSON.stringify({ ok: true, reply: "好", model: "grok", personaId: "friday", routedToGrokBot: true }));
+    });
+    const screens: { turn: { tag: string; ear?: string }; gesture: { tag: string } }[] = [];
+    const timers: { fire: () => void }[] = [];
+    const drive = startDrive({
+      now: () => 0,
+      loadToken: () => Promise.resolve(null),
+      capture: () => Promise.reject(new Error("web speech unused")),
+      speak() {},
+      exit() {},
+      schedule(_delay, fire) {
+        const timer = { fire };
+        timers.push(timer);
+        return () => { timer.fire = () => {}; };
+      },
+      render(state) { screens.push(state); },
+      pluginTarget: pluginTarget as { onPluginMessage?: (data: unknown) => void },
+    });
+    drive.control("longPressStart");
+    expect(screens.at(-1)?.gesture.tag).toBe("ptt-armed");
+    onPluginMessage?.({ type: "sttEnded", transcript: "早晨" });
+    expect(calls).toEqual([]);
+    drive.control("longPressEnd");
+    await vi.waitFor(() => expect(calls).toEqual(["早晨"]));
+    await vi.waitFor(() => expect(screens.at(-1)?.turn.tag).toBe("done"));
+    expect(posts).toEqual(["start", "stop"]);
+
+    drive.control("longPressStart");
+    drive.control("longPressEnd");
+    expect(calls).toEqual(["早晨"]);
+    onPluginMessage?.({ type: "sttEnded", transcript: "唔該" });
+    await vi.waitFor(() => expect(calls).toEqual(["早晨", "唔該"]));
+    timers.at(-1)?.fire();
+    expect(calls).toEqual(["早晨", "唔該"]);
+  });
+
+  it("shows no speech after the handset stays quiet, and no mic when the bridge is missing", async () => {
+    const calls: string[] = [];
+    let captured = false;
+    vi.stubGlobal("fetch", async (_url: string, init?: RequestInit) => {
+      calls.push((JSON.parse(String(init?.body)) as { message: string }).message);
+      return new Response(JSON.stringify({ ok: true, reply: "no", model: "local-friday", personaId: "friday", routedToGrokBot: false }));
+    });
+    const screens: { turn: { tag: string; ear?: string }; gesture: { tag: string } }[] = [];
+    const timers: { fire: () => void }[] = [];
+    let onPluginMessage: ((data: unknown) => void) | undefined;
+    const native = startDrive({
+      now: () => 0,
+      loadToken: () => Promise.resolve(null),
+      capture: () => Promise.reject(new Error("unused")),
+      speak() {},
+      exit() {},
+      schedule(_delay, fire) {
+        timers.push({ fire });
+        return () => {};
+      },
+      render(state) { screens.push(state); },
+      pluginTarget: {
+        CreationVoiceHandler: { postMessage() {} },
+        get onPluginMessage() { return onPluginMessage; },
+        set onPluginMessage(handler: ((data: unknown) => void) | undefined) { onPluginMessage = handler; },
+      },
+    });
+    native.control("longPressStart");
+    native.control("longPressEnd");
+    expect(screens.at(-1)?.gesture.tag).toBe("awaiting-utterance");
+    timers.at(-1)?.fire();
+    expect(calls).toEqual([]);
+    expect(screens.at(-1)?.turn).toEqual({ tag: "silent", ear: "r1" });
+
+    const quiet = startDrive({
+      now: () => 0,
+      loadToken: () => Promise.resolve(null),
+      capture() {
+        captured = true;
+        return Promise.resolve(null);
+      },
+      speak() {},
+      exit() {},
+      schedule: () => () => {},
+      render(state) { screens.push(state); },
+      hasMic: () => false,
+    });
+    quiet.control("longPressStart");
+    expect(screens.at(-1)?.gesture.tag).toBe("ptt-armed");
+    quiet.control("longPressEnd");
+    expect(captured).toBe(false);
+    expect(calls).toEqual([]);
+    expect(screens.at(-1)?.turn.tag).toBe("no-mic");
   });
 });

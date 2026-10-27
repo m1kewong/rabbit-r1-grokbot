@@ -21,14 +21,21 @@ export type DrivePorts = {
     onPluginMessage?: (data: unknown) => void;
     CreationVoiceHandler?: { postMessage(message: string): void };
   };
+  hasMic?: () => boolean;
 };
+
+const STT_GRACE_MS = 1_200;
 
 type ListenSession = {
   native: boolean;
+  absent: boolean;
   stopped: boolean;
   transcript: string | null;
   pending: Promise<string | null> | null;
+  cancelGrace: (() => void) | null;
 };
+
+type VoiceBridge = { postMessage(message: string): void };
 
 type ReplySlot = {
   sent: string;
@@ -125,22 +132,29 @@ export function startDrive(ports: DrivePorts): {
     }
   }
 
-  function voiceHandler(): { postMessage(message: string): void } | null {
-    const handler = ports.pluginTarget?.CreationVoiceHandler;
-    if (!handler || typeof handler.postMessage !== "function") return null;
-    return handler;
+  function voiceHandler(): VoiceBridge | null {
+    return bridgeOf(ports.pluginTarget) ?? bridgeOf(globalThis);
   }
 
-  function deliver(session: ListenSession, heard: string | null): void {
+  function deliver(session: ListenSession, heard: string | null, ear?: "r1" | "absent"): void {
     if (listen !== session) return;
+    session.cancelGrace?.();
+    session.cancelGrace = null;
     listen = null;
-    dispatch({ type: "utterance", heard });
+    dispatch(ear ? { type: "utterance", heard, ear } : { type: "utterance", heard });
   }
 
   function beginListen(): void {
     const handler = voiceHandler();
     if (handler) {
-      const session: ListenSession = { native: true, stopped: false, transcript: null, pending: null };
+      const session: ListenSession = {
+        native: true,
+        absent: false,
+        stopped: false,
+        transcript: null,
+        pending: null,
+        cancelGrace: null,
+      };
       listen = session;
       try {
         handler.postMessage("start");
@@ -149,11 +163,24 @@ export function startDrive(ports: DrivePorts): {
       }
       return;
     }
+    if (ports.hasMic && !ports.hasMic()) {
+      listen = {
+        native: false,
+        absent: true,
+        stopped: false,
+        transcript: "",
+        pending: null,
+        cancelGrace: null,
+      };
+      return;
+    }
     const session: ListenSession = {
       native: false,
+      absent: false,
       stopped: false,
       transcript: null,
       pending: ports.capture(),
+      cancelGrace: null,
     };
     listen = session;
     void session.pending?.then(
@@ -177,14 +204,26 @@ export function startDrive(ports: DrivePorts): {
       return;
     }
     session.stopped = true;
+    if (session.absent) {
+      deliver(session, null, "absent");
+      return;
+    }
     if (session.native) {
       try {
         voiceHandler()?.postMessage("stop");
       } catch {
-        deliver(session, session.transcript ?? "");
+        deliver(session, session.transcript ?? "", "r1");
         return;
       }
-      if (session.transcript !== null) deliver(session, session.transcript);
+      if (listen !== session) return;
+      if (session.transcript !== null) {
+        deliver(session, session.transcript, "r1");
+        return;
+      }
+      session.cancelGrace = ports.schedule(STT_GRACE_MS, () => {
+        if (listen !== session) return;
+        deliver(session, "", "r1");
+      });
       return;
     }
     if (session.transcript !== null) deliver(session, session.transcript);
@@ -195,8 +234,10 @@ export function startDrive(ports: DrivePorts): {
       const transcript = readSttEnded(data);
       if (transcript === undefined) return;
       const session = listen;
-      if (!session?.native || !session.stopped) return;
-      deliver(session, transcript);
+      if (!session?.native) return;
+      session.transcript = transcript;
+      if (!session.stopped) return;
+      deliver(session, transcript, "r1");
     };
   }
   ports.viewport?.addEventListener("resize", () => {
@@ -238,6 +279,13 @@ function controlEvent(name: string, nowMs: number): DeviceEvent | null {
     default:
       return null;
   }
+}
+
+function bridgeOf(source: unknown): VoiceBridge | null {
+  if (typeof source !== "object" || source === null) return null;
+  const handler = (source as { CreationVoiceHandler?: { postMessage?: unknown } }).CreationVoiceHandler;
+  if (!handler || typeof handler.postMessage !== "function") return null;
+  return handler as VoiceBridge;
 }
 
 function readSttEnded(data: unknown): string | undefined {

@@ -104,6 +104,17 @@ export function personaById(id: PersonaId): Persona {
   throw new Error(`unknown persona ${id}`);
 }
 
+const NAMED_PREFIX = /^(?:\[R1 -> [^\]]+\]|\[Agent: [^\]]+\])\s*/;
+
+export function plainUtterance(text: string): string {
+  let next = text;
+  for (;;) {
+    const stripped = next.replace(NAMED_PREFIX, "");
+    if (stripped === next) return next;
+    next = stripped;
+  }
+}
+
 export function neighbor(id: PersonaId, direction: "up" | "down"): PersonaId {
   const index = PERSONAS.findIndex((persona) => persona.id === id);
   const delta = direction === "down" ? 1 : -1;

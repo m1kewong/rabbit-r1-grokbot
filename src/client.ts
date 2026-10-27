@@ -1,7 +1,7 @@
 import {
   LOCAL_MODEL,
   parsePersonaId,
-  personaById,
+  plainUtterance,
   type ChatResult,
   type ChatTurn,
   type HealthStatus,
@@ -11,11 +11,6 @@ import {
 
 function isRecord(value: unknown): value is Record<string, unknown> {
   return typeof value === "object" && value !== null && !Array.isArray(value);
-}
-
-function clientTurn(personaId: PersonaId, prompt: string): string {
-  if (prompt.startsWith("[R1 -> ")) return prompt;
-  return `[R1 -> ${personaById(personaId).label}] ${prompt}`;
 }
 
 function coerceChatResult(value: unknown, fallbackPersona: PersonaId): ChatResult {
@@ -45,7 +40,7 @@ export async function postChat(input: {
         ...(input.token ? { authorization: `Bearer ${input.token}` } : {}),
       },
       body: JSON.stringify({
-        message: clientTurn(input.personaId, input.message),
+        message: plainUtterance(input.message),
         personaId: input.personaId,
         history: input.history,
         token: input.token,

@@ -14,7 +14,7 @@ import {
 
 const CREATION = {
   title: "Stark R1",
-  url: "https://r1.example/?v=20261027-ptt",
+  url: "https://r1.example/?v=20261027-aou",
   description: "F.R.I.D.A.Y. & Grok Bot Communicator for Rabbit R1",
   iconUrl: "https://r1.example/icon.svg",
   themeColor: FRAME_COLOR,
@@ -38,7 +38,7 @@ describe("creation QR", () => {
     if (!built.ok) return;
     const url = new URL(built.value.url);
     expect(`${url.origin}${url.pathname}`).toBe("https://r1.example/");
-    expect(url.search).toBe("?v=20261027-ptt");
+    expect(url.search).toBe("?v=20261027-aou");
     expect(built.value.iconUrl).toBe("https://r1.example/icon.svg");
     expect(validateCreation(built.text)).toEqual({ ok: true });
   });

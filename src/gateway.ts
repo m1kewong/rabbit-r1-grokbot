@@ -1,7 +1,7 @@
 import {
   LOCAL_MODEL,
   parsePersonaId,
-  personaById,
+  plainUtterance,
   type ChatResult,
   type ChatTurn,
   type HealthStatus,
@@ -174,13 +174,6 @@ function offlineReply(outboundText: string): string {
   return OFFLINE_PREFIX + outboundText;
 }
 
-function applyAgentPreamble(text: string, personaId: PersonaId): string {
-  if (personaId === "friday") return text;
-  const prefix = `[Agent: ${personaById(personaId).label}] `;
-  if (text.startsWith(prefix) || text.startsWith("[Agent: ")) return text;
-  return `${prefix}${text}`;
-}
-
 function localResult(personaId: PersonaId, outbound: string): Extract<ChatResult, { ok: true }> {
   return {
     ok: true,
@@ -221,7 +214,7 @@ async function completeChat(
   },
   config: GatewayConfig,
 ): Promise<Extract<ChatResult, { ok: true }>> {
-  const outbound = applyAgentPreamble(input.message, input.personaId);
+  const outbound = plainUtterance(input.message);
   const bearer = input.token ?? config.bridgeToken;
   if (!bearer) return localResult(input.personaId, outbound);
   try {
