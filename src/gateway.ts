@@ -661,19 +661,12 @@ function onTalk(session: Extract<Session, { tag: "live" }>, input: Extract<StepI
 
 function onModel(session: Session, input: Extract<StepInput, { type: "model" }>): StepResult {
   if (session.tag !== "live") return none(session);
-  let requestId: RequestId | null = null;
-  let run: LiveRun | null = null;
-  for (const [id, candidate] of session.runs) {
-    if (id === input.requestId) {
-      requestId = id;
-      run = candidate;
-    }
-  }
-  if (!requestId || !run || run.phase === "final") return none(session);
+  const run = session.runs.get(input.requestId);
+  if (!run || run.phase === "final") return none(session);
   if (run.text !== "" && !input.fullText.startsWith(run.text)) return none(session);
   if (!input.finish) {
     const runs = new Map(session.runs);
-    runs.set(requestId, { ...run, text: input.fullText });
+    runs.set(input.requestId, { ...run, text: input.fullText });
     const effects: SessionEffect[] = [];
     if (input.fullText !== run.text) {
       effects.push({ type: "send", message: chatMessage(run, "delta", input.fullText, 1) });
@@ -682,7 +675,7 @@ function onModel(session: Session, input: Extract<StepInput, { type: "model" }>)
   }
   const text = input.fullText;
   const runs = new Map(session.runs);
-  runs.set(requestId, { ...run, text, phase: "final", waiterId: null });
+  runs.set(input.requestId, { ...run, text, phase: "final", waiterId: null });
   const prior = session.turns.get(run.sessionKey) ?? run.history;
   const last = prior.at(-1);
   const withUser =
