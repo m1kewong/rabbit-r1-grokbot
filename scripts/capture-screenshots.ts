@@ -30,7 +30,7 @@ try {
     const img = document.querySelector(".neuron-gif");
     return (
       img instanceof HTMLImageElement &&
-      (img.getAttribute("src")?.includes("neuron-listen.gif") ?? false) &&
+      (img.getAttribute("src")?.includes("neuron-listen.png") ?? false) &&
       img.complete &&
       img.naturalWidth > 0
     );

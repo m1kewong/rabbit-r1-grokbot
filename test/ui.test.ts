@@ -38,7 +38,8 @@ describe("creation composer", () => {
       viewport: window,
     });
     expect(root.querySelector(".side")).toBeNull();
-    expect(root.querySelector(".neuron-gif")?.getAttribute("src")).toBe(`/neuron-idle.gif?v=${CREATION_URL_VERSION}`);
+    expect(root.querySelector(".screen")?.classList.contains("sheet-open")).toBe(false);
+    expect(root.querySelector(".neuron-gif")?.getAttribute("src")).toBe(`/neuron-idle.png?v=${CREATION_URL_VERSION}`);
     expect(root.querySelector(".avatar")?.getAttribute("src")).toBe("/avatars/friday.png");
     expect(root.querySelector(".sheet")?.hasAttribute("hidden")).toBe(true);
     const neuron = root.querySelector(".neuron");
@@ -46,6 +47,7 @@ describe("creation composer", () => {
     neuron?.dispatchEvent(new PointerEvent("pointerdown", { bubbles: true }));
     neuron?.dispatchEvent(new PointerEvent("pointerup", { bubbles: true }));
     expect(root.querySelector(".sheet")?.hasAttribute("hidden")).toBe(false);
+    expect(root.querySelector(".screen")?.classList.contains("sheet-open")).toBe(true);
     const input = root.querySelector("#composer");
     expect(input).toBeInstanceOf(HTMLInputElement);
     if (!(input instanceof HTMLInputElement)) return;
@@ -68,13 +70,13 @@ describe("creation composer", () => {
     expect(root.querySelector("h1")?.textContent).toBe("J.A.R.V.I.S.");
     drive.control("longPressStart");
     expect(root.textContent).toContain("Listening");
-    expect(root.querySelector(".neuron-gif")?.getAttribute("src")).toBe(`/neuron-listen.gif?v=${CREATION_URL_VERSION}`);
+    expect(root.querySelector(".neuron-gif")?.getAttribute("src")).toBe(`/neuron-listen.png?v=${CREATION_URL_VERSION}`);
     expect(root.querySelector(".sheet")?.hasAttribute("hidden")).toBe(false);
     drive.control("longPressEnd");
     await Promise.resolve();
     await Promise.resolve();
     expect(root.textContent).toContain("No speech");
-    expect(root.querySelector(".neuron-gif")?.getAttribute("src")).toBe(`/neuron-idle.gif?v=${CREATION_URL_VERSION}`);
+    expect(root.querySelector(".neuron-gif")?.getAttribute("src")).toBe(`/neuron-idle.png?v=${CREATION_URL_VERSION}`);
     expect(root.querySelector("#composer")).toBe(input);
     expect(input.value).toBe("hi");
   });

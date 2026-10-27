@@ -1,5 +1,4 @@
 import { describe, expect, it } from "vitest";
-import { readFileSync } from "node:fs";
 import { captureSpeech } from "../src/ui";
 
 type ResultHandler = (event: { results: ArrayLike<ArrayLike<{ transcript: string }>> }) => void;
@@ -57,20 +56,5 @@ describe("captureSpeech", () => {
     const heard = await captureSpeech(windowWith(Rec));
     expect(langs).toEqual(["zh-HK", "yue-HK", "zh-TW"]);
     expect(heard).toBe("你好");
-  });
-});
-
-describe("neuron gifs", () => {
-  it("ships looping idle and listen heroes", () => {
-    for (const name of ["neuron-idle.gif", "neuron-listen.gif"]) {
-      const bytes = readFileSync(new URL(`../public/${name}`, import.meta.url));
-      expect(bytes.subarray(0, 6).toString()).toBe("GIF89a");
-      expect(bytes.includes(Buffer.from("NETSCAPE2.0"))).toBe(true);
-      let frames = 0;
-      for (let i = 0; i < bytes.length - 1; i += 1) {
-        if (bytes[i] === 0x21 && bytes[i + 1] === 0xf9) frames += 1;
-      }
-      expect(frames).toBeGreaterThan(1);
-    }
   });
 });

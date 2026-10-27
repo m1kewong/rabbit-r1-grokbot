@@ -132,7 +132,7 @@ function listeningNow(state: DeviceState): boolean {
 }
 
 function neuronSrc(active: boolean): string {
-  const name = active ? "neuron-listen.gif" : "neuron-idle.gif";
+  const name = active ? "neuron-listen.png" : "neuron-idle.png";
   return `/${name}?v=${CREATION_URL_VERSION}`;
 }
 
@@ -142,7 +142,8 @@ function screenMarkup(state: DeviceState, persona: Persona, mark: "bare" | null)
   const paintAttr = mark === "bare" ? ` data-paint="bare"` : "";
   const open = sheetOpen(state);
   const listening = listeningNow(state);
-  return `<section class="screen"${paintAttr} data-screen="stark-r1" style="${SCREEN_STYLE}">
+  const screenClass = open ? "screen sheet-open" : "screen";
+  return `<section class="${screenClass}"${paintAttr} data-screen="stark-r1" style="${SCREEN_STYLE}">
     <i class="tick tl"></i><i class="tick tr"></i><i class="tick bl"></i><i class="tick br"></i>
     <header class="identity">
       ${whoMark(persona)}
@@ -301,6 +302,9 @@ function applyLive(scope: ParentNode, state: DeviceState, persona: Persona): voi
   }
   const listening = listeningNow(state);
   const open = sheetOpen(state);
+  const screen =
+    scope instanceof HTMLElement && scope.classList.contains("screen") ? scope : scope.querySelector(".screen");
+  if (screen instanceof HTMLElement) screen.classList.toggle("sheet-open", open);
   const sheet = scope.querySelector(".sheet");
   if (sheet instanceof HTMLElement) {
     sheet.hidden = !open;
