@@ -963,7 +963,6 @@ function attachSocket(socket: SocketPort, config: GatewayConfig, book: TokenBook
     }
   };
 
-  // A frame can arrive inside send() before the challenge is queued. Hold it until that send returns.
   let ready = false;
   const buffered: string[] = [];
   socket.onText((text) => {

@@ -403,14 +403,14 @@ export function browserTokens(target: Window = window): {
         try {
           secure.setItem(CHAT_TOKEN_KEY, bytesToBase64(token));
           return;
-        } catch {
-          // The secure store rejected the write, so the plain store still records it.
+        } catch (error) {
+          if (!(error instanceof Error)) throw error;
         }
       }
       try {
         target.localStorage.setItem(CHAT_TOKEN_KEY, token);
-      } catch {
-        // Private mode has no storage.
+      } catch (error) {
+        if (!(error instanceof DOMException)) throw error;
       }
     },
   };
@@ -453,8 +453,8 @@ function loadChrome(target: Window): void {
     const bridge = target.localStorage.getItem(BRIDGE_KEY);
     if (bridge) chrome.bridgeUrl = bridge;
     chrome.gatewayToken = target.localStorage.getItem(GATEWAY_TOKEN_KEY) ?? "";
-  } catch {
-    // Private mode keeps the defaults for this page load.
+  } catch (error) {
+    if (!(error instanceof DOMException)) throw error;
   }
 }
 
@@ -462,8 +462,8 @@ function saveChrome(target: Window): void {
   try {
     target.localStorage.setItem(BRIDGE_KEY, chrome.bridgeUrl);
     target.localStorage.setItem(GATEWAY_TOKEN_KEY, chrome.gatewayToken);
-  } catch {
-    // Private mode cannot persist the cockpit fields.
+  } catch (error) {
+    if (!(error instanceof DOMException)) throw error;
   }
 }
 
