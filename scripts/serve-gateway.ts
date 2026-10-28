@@ -12,4 +12,10 @@ export async function serveMain(argv: readonly string[], env: GatewayBindings): 
   process.stdout.write(`${listening.url}\n`);
 }
 
-await serveMain(process.argv, process.env);
+await serveMain(process.argv, {
+  ALLOW_ANY_TOKEN: process.env.ALLOW_ANY_TOKEN,
+  GATEWAY_TOKEN: process.env.GATEWAY_TOKEN,
+  EVEN_G2_BRIDGE_URL: process.env.EVEN_G2_BRIDGE_URL,
+  EVEN_G2_TOKEN: process.env.EVEN_G2_TOKEN,
+  ELEVENLABS_API_KEY: process.env.ELEVENLABS_API_KEY,
+});

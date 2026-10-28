@@ -131,4 +131,4 @@ export async function generateQrMain(argv: readonly string[], env: GatewayBindin
   }
 }
 
-await generateQrMain(process.argv, process.env);
+await generateQrMain(process.argv, { GATEWAY_TOKEN: process.env.GATEWAY_TOKEN });

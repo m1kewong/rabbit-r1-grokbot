@@ -39,6 +39,12 @@ describe("parseEnv", () => {
     expect(locked.config.allowAnyToken).toBe(false);
     if (locked.config.allowAnyToken) return;
     expect(locked.config.gatewayToken).toBe("secret");
+    expect(allowed.config.bridgeService).toBeNull();
+    expect(allowed.config.elevenLabsApiKey).toBeNull();
+    const keyed = parseEnv({ ALLOW_ANY_TOKEN: "true", ELEVENLABS_API_KEY: "  xi-key  " });
+    expect(keyed.ok).toBe(true);
+    if (!keyed.ok) return;
+    expect(keyed.config.elevenLabsApiKey).toBe("xi-key");
   });
 });
 
@@ -46,7 +52,7 @@ describe("POST /api/chat", () => {
   it("answers OPTIONS with 204 CORS and an offline reply when no bridge token is set", async () => {
     const server = await listenGateway(startGateway(offlineConfig), { port: 0, staticDir: "dist" });
     try {
-      for (const path of ["/api/chat", "/v1/chat/completions"]) {
+      for (const path of ["/api/chat", "/v1/chat/completions", "/api/stt/token"]) {
         const preflight = await fetch(`${server.url}${path}`, { method: "OPTIONS" });
         expect(preflight.status).toBe(204);
         expect(await preflight.text()).toBe("");
@@ -243,3 +249,299 @@ describe("postChat", () => {
     expect(bodies[1]?.history).toEqual([{ role: "user", content: "Hello" }]);
   });
 });
+
+const BRIDGE = "https://even-g2-bridge.saviormike.workers.dev";
+const COMPLETIONS = `${BRIDGE}/v1/chat/completions`;
+
+function chatRequest(message = "Hello"): {
+  method: string;
+  path: string;
+  headers: Record<string, string>;
+  body: string;
+} {
+  return {
+    method: "POST",
+    path: "/api/chat",
+    headers: { "content-type": "application/json" },
+    body: JSON.stringify({ message, personaId: "friday" }),
+  };
+}
+
+function online(text: string): Response {
+  return new Response(JSON.stringify({ model: "grok-2", choices: [{ message: { content: text } }] }), {
+    status: 200,
+    headers: { "content-type": "application/json" },
+  });
+}
+
+function readReply(served: Awaited<ReturnType<ReturnType<typeof startGateway>["receive"]>>): { reply?: string; error?: string; ok?: boolean; token?: string } {
+  if (served.kind !== "respond" || served.response.body === null) throw new Error("expected a body");
+  return JSON.parse(served.response.body) as { reply?: string; error?: string; ok?: boolean; token?: string };
+}
+
+describe("bridge lane", () => {
+  it("uses the request binding for chat and keeps global fetch for a null lane", async () => {
+    const seen: { who: string; url: string; authorization: string | null }[] = [];
+    const service = {
+      fetch: async (input: RequestInfo | URL, init?: RequestInit) => {
+        seen.push({
+          who: "binding",
+          url: String(input),
+          authorization: new Headers(init?.headers).get("authorization"),
+        });
+        return online("Bound.");
+      },
+    };
+    const cached = {
+      fetch: async (input: RequestInfo | URL, init?: RequestInit) => {
+        seen.push({
+          who: "cached",
+          url: String(input),
+          authorization: new Headers(init?.headers).get("authorization"),
+        });
+        return online("Cached.");
+      },
+    };
+    vi.stubGlobal("fetch", async (input: RequestInfo | URL, init?: RequestInit) => {
+      seen.push({
+        who: "global",
+        url: String(input),
+        authorization: new Headers(init?.headers).get("authorization"),
+      });
+      return online("Global.");
+    });
+    const host = startGateway({
+      allowAnyToken: true,
+      gatewayToken: null,
+      bridgeToken: "bridge-secret",
+      bridgeUrl: `${BRIDGE}/`,
+      bridgeService: cached,
+    });
+    const inherited = await host.receive(chatRequest());
+    expect(readReply(inherited).reply).toBe("Cached.");
+    const bound = await host.receive(chatRequest(), { tag: "request", service });
+    expect(readReply(bound).reply).toBe("Bound.");
+    const cleared = await host.receive(chatRequest(), { tag: "request", service: null });
+    expect(readReply(cleared).reply).toBe("Global.");
+    expect(seen).toEqual([
+      { who: "cached", url: COMPLETIONS, authorization: "Bearer bridge-secret" },
+      { who: "binding", url: COMPLETIONS, authorization: "Bearer bridge-secret" },
+      { who: "global", url: COMPLETIONS, authorization: "Bearer bridge-secret" },
+    ]);
+  });
+
+  it("keeps a device token on the host when a later request changes only the fetcher", async () => {
+    const seen: string[] = [];
+    const serviceA = {
+      fetch: async (input: RequestInfo | URL) => {
+        seen.push(`A ${String(input)}`);
+        return online("from-a");
+      },
+    };
+    const serviceB = {
+      fetch: async (input: RequestInfo | URL) => {
+        seen.push(`B ${String(input)}`);
+        return online("from-b");
+      },
+    };
+    const host = startGateway({
+      allowAnyToken: false,
+      gatewayToken: "gate",
+      bridgeToken: "bridge-secret",
+      bridgeUrl: BRIDGE,
+    });
+    const upgraded = await host.receive(
+      { method: "GET", path: "/openclaw/ws", headers: { upgrade: "websocket" }, body: null },
+      { tag: "request", service: serviceA },
+    );
+    expect(upgraded.kind).toBe("upgrade");
+    if (upgraded.kind !== "upgrade") return;
+    const first = socketPort();
+    upgraded.attach(first.port);
+    first.receive(JSON.stringify({
+      type: "req",
+      id: "c1",
+      method: "connect",
+      params: { minProtocol: 3, maxProtocol: 4, auth: { token: "gate" } },
+    }));
+    const hello = JSON.parse(first.sent.at(-1) ?? "{}") as { ok?: boolean; payload?: { auth?: { deviceToken?: string } } };
+    expect(hello.ok).toBe(true);
+    const deviceToken = hello.payload?.auth?.deviceToken;
+    expect(deviceToken).toMatch(/^[0-9a-f]{64}$/);
+    first.receive(JSON.stringify({
+      type: "req",
+      id: "t1",
+      method: "chat.send",
+      params: { message: "Status" },
+    }));
+    await vi.waitFor(() => expect(seen).toEqual([`A ${COMPLETIONS}`]));
+
+    const again = await host.receive(
+      { method: "GET", path: "/openclaw/ws", headers: { upgrade: "websocket" }, body: null },
+      { tag: "request", service: serviceB },
+    );
+    expect(again.kind).toBe("upgrade");
+    if (again.kind !== "upgrade") return;
+    const second = socketPort();
+    again.attach(second.port);
+    second.receive(JSON.stringify({
+      type: "req",
+      id: "c2",
+      method: "connect",
+      params: { minProtocol: 3, maxProtocol: 4, auth: { deviceToken } },
+    }));
+    const remembered = JSON.parse(second.sent.at(-1) ?? "{}") as { ok?: boolean };
+    expect(remembered.ok).toBe(true);
+    second.receive(JSON.stringify({
+      type: "req",
+      id: "t2",
+      method: "chat.send",
+      params: { message: "Again" },
+    }));
+    await vi.waitFor(() => expect(seen).toEqual([`A ${COMPLETIONS}`, `B ${COMPLETIONS}`]));
+    first.stop();
+    second.stop();
+  });
+});
+
+describe("POST /api/stt/token", () => {
+  it("mints with the gateway or bridge bearer and does not authorize /api/chat", async () => {
+    const calls: { url: string; key: string | null }[] = [];
+    vi.stubGlobal("fetch", async (input: RequestInfo | URL, init?: RequestInit) => {
+      calls.push({ url: String(input), key: new Headers(init?.headers).get("xi-api-key") });
+      return new Response(JSON.stringify({ token: "scribe-token" }), { status: 200 });
+    });
+    const host = startGateway({
+      allowAnyToken: false,
+      gatewayToken: "gate",
+      bridgeToken: "bridge-secret",
+      bridgeUrl: BRIDGE,
+      elevenLabsApiKey: "xi-key",
+      bridgeService: {
+        fetch: async () => {
+          throw new Error("binding");
+        },
+      },
+    });
+    const denied = await host.receive({
+      method: "POST",
+      path: "/api/stt/token",
+      headers: { authorization: "Bearer other" },
+      body: null,
+    });
+    expect(denied.kind).toBe("respond");
+    if (denied.kind !== "respond") return;
+    expect(denied.response.status).toBe(401);
+    expect(denied.response.headers["Access-Control-Allow-Origin"]).toBe("*");
+    expect(readReply(denied)).toEqual({ ok: false, error: "unauthorized" });
+    expect(calls).toEqual([]);
+
+    const fromHeader = await host.receive({
+      method: "POST",
+      path: "/api/stt/token",
+      headers: { authorization: "Bearer gate" },
+      body: "{",
+    });
+    expect(readReply(fromHeader)).toEqual({ ok: true, token: "scribe-token" });
+    const fromBody = await host.receive({
+      method: "POST",
+      path: "/api/stt/token",
+      headers: {},
+      body: JSON.stringify({ token: "bridge-secret" }),
+    });
+    expect(readReply(fromBody)).toEqual({ ok: true, token: "scribe-token" });
+    expect(calls).toEqual([
+      { url: "https://api.elevenlabs.io/v1/single-use-token/realtime_scribe", key: "xi-key" },
+      { url: "https://api.elevenlabs.io/v1/single-use-token/realtime_scribe", key: "xi-key" },
+    ]);
+
+    const chat = await host.receive({
+      method: "POST",
+      path: "/api/chat",
+      headers: {},
+      body: JSON.stringify({ message: "Hello", personaId: "friday" }),
+    });
+    expect(chat.kind).toBe("respond");
+    if (chat.kind !== "respond") return;
+    expect(chat.response.status).toBe(200);
+    expect(readReply(chat).reply).toBe(`${OFFLINE}Hello`);
+  });
+
+  it("reports a missing key and an upstream failure", async () => {
+    const unconfigured = startGateway({
+      allowAnyToken: true,
+      gatewayToken: null,
+      bridgeToken: null,
+      bridgeUrl: BRIDGE,
+    });
+    const missing = await unconfigured.receive({ method: "POST", path: "/api/stt/token", headers: {}, body: null });
+    expect(missing.kind).toBe("respond");
+    if (missing.kind !== "respond") return;
+    expect(missing.response.status).toBe(503);
+    expect(missing.response.headers["Access-Control-Allow-Origin"]).toBe("*");
+    expect(readReply(missing)).toEqual({ ok: false, error: "stt-unconfigured" });
+
+    const host = startGateway({
+      allowAnyToken: true,
+      gatewayToken: null,
+      bridgeToken: null,
+      bridgeUrl: BRIDGE,
+      elevenLabsApiKey: "xi-key",
+    });
+    vi.stubGlobal("fetch", async () => new Response("nope", { status: 500 }));
+    const failed = await host.receive({ method: "POST", path: "/api/stt/token", headers: {}, body: null });
+    expect(failed.kind).toBe("respond");
+    if (failed.kind !== "respond") return;
+    expect(failed.response.status).toBe(502);
+    expect(readReply(failed)).toEqual({ ok: false, error: "stt-upstream-failed" });
+
+    vi.stubGlobal("fetch", async () => new Response("not-json", { status: 200 }));
+    const bad = await host.receive({ method: "POST", path: "/api/stt/token", headers: {}, body: null });
+    expect(readReply(bad)).toEqual({ ok: false, error: "stt-upstream-failed" });
+
+    vi.stubGlobal("fetch", async () => new Response(JSON.stringify({ token: "  " }), { status: 200 }));
+    const empty = await host.receive({ method: "POST", path: "/api/stt/token", headers: {}, body: null });
+    expect(readReply(empty)).toEqual({ ok: false, error: "stt-upstream-failed" });
+
+    vi.stubGlobal("fetch", () => Promise.reject(new Error("down")));
+    const thrown = await host.receive({ method: "POST", path: "/api/stt/token", headers: {}, body: null });
+    expect(readReply(thrown)).toEqual({ ok: false, error: "stt-upstream-failed" });
+  });
+});
+
+function socketPort(): {
+  port: {
+    send(text: string): void;
+    close(reason: string): void;
+    onText(handler: (text: string) => void): void;
+    onClose(handler: () => void): void;
+  };
+  sent: string[];
+  receive(text: string): void;
+  stop(): void;
+} {
+  const sent: string[] = [];
+  let onText: (text: string) => void = () => {};
+  let onClose: () => void = () => {};
+  return {
+    sent,
+    port: {
+      send(text) {
+        sent.push(text);
+      },
+      close() {},
+      onText(handler) {
+        onText = handler;
+      },
+      onClose(handler) {
+        onClose = handler;
+      },
+    },
+    receive(text) {
+      onText(text);
+    },
+    stop() {
+      onClose();
+    },
+  };
+}

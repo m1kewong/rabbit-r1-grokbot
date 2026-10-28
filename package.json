@@ -6,6 +6,7 @@
     "dev": "vite",
     "build": "tsc --noEmit && eslint . --max-warnings 0 && vite build",
     "test": "vitest run",
+    "typecheck": "tsc --noEmit",
     "generate:qr": "tsx scripts/generate-qr.ts",
     "serve": "tsx scripts/serve-gateway.ts",
     "capture": "tsx scripts/capture-screenshots.ts"
