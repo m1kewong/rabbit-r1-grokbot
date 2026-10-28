@@ -105,7 +105,7 @@ describe("reduceDevice", () => {
     expect(idleEnd.effects).toEqual([]);
     expect(idleEnd.state.gesture).toEqual({ tag: "idle" });
     const armed = reduceDevice(initialDevice(), { type: "longPressStart" });
-    expect(armed.state.gesture).toEqual({ tag: "ptt-armed" });
+    expect(armed.state.gesture).toEqual({ tag: "ptt-armed", partial: "" });
     expect(armed.effects).toEqual([{ type: "ptt-start" }]);
     expect(reduceDevice(armed.state, { type: "longPressStart" }).effects).toEqual([]);
     const released = reduceDevice(armed.state, { type: "longPressEnd" });
@@ -116,7 +116,27 @@ describe("reduceDevice", () => {
     expect(over.effects).toEqual([{ type: "cancel-wait" }, { type: "ptt-start" }]);
     const late = reduceDevice(over.state, { type: "sideTimer", nowMs: 300 });
     expect(late.effects).toEqual([]);
-    expect(late.state.gesture).toEqual({ tag: "ptt-armed" });
+    expect(late.state.gesture).toEqual({ tag: "ptt-armed", partial: "" });
+  });
+
+  it("shows a partial on the armed hold and does not send it", () => {
+    const idle = initialDevice();
+    const ignored = reduceDevice(idle, { type: "partial", text: "no" });
+    expect(ignored.effects).toEqual([]);
+    expect(ignored.state).toBe(idle);
+    const armed = reduceDevice(idle, { type: "longPressStart" });
+    const preview = reduceDevice(armed.state, { type: "partial", text: "早" });
+    expect(preview.effects).toEqual([]);
+    expect(preview.state.gesture).toEqual({ tag: "ptt-armed", partial: "早" });
+    expect(preview.state.composer).toBe("");
+    expect(preview.state.transcript).toEqual([]);
+    const repeat = reduceDevice(preview.state, { type: "partial", text: "早" });
+    expect(repeat.state).toBe(preview.state);
+    const released = reduceDevice(preview.state, { type: "longPressEnd" });
+    expect(released.state.gesture).toEqual({ tag: "awaiting-utterance" });
+    const late = reduceDevice(released.state, { type: "partial", text: "late" });
+    expect(late.state).toBe(released.state);
+    expect(late.effects).toEqual([]);
   });
 
   it("aborts a hold that hears nothing and keeps the unsent draft", () => {

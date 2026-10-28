@@ -1,6 +1,7 @@
 // @vitest-environment happy-dom
 
 import { describe, expect, it } from "vitest";
+import { initialDevice, reduceDevice } from "../src/device";
 import { startDrive } from "../src/drive";
 import { CREATION_URL_VERSION } from "../src/qr";
 import { chromeMode, paint } from "../src/ui";
@@ -79,5 +80,24 @@ describe("creation composer", () => {
     expect(root.querySelector(".neuron-gif")?.getAttribute("src")).toBe(`/neuron-idle.png?v=${CREATION_URL_VERSION}`);
     expect(root.querySelector("#composer")).toBe(input);
     expect(input.value).toBe("hi");
+    const preview = reduceDevice(
+      reduceDevice(reduceDevice(initialDevice(), { type: "composer", text: "hi" }).state, {
+        type: "longPressStart",
+      }).state,
+      { type: "partial", text: "  <bay>  " },
+    ).state;
+    root.replaceChildren();
+    paint(root, window, preview, () => {});
+    expect(root.querySelector(".listen")?.textContent).toBe("<bay>");
+    expect(root.querySelector("[data-bind=log]")?.textContent).toContain("<bay>");
+    const typed = root.querySelector("#composer");
+    expect(typed).toBeInstanceOf(HTMLInputElement);
+    if (!(typed instanceof HTMLInputElement)) return;
+    expect(typed.value).toBe("hi");
+    paint(root, window, reduceDevice(preview, { type: "partial", text: "door" }).state, () => {});
+    expect(root.querySelector(".listen")?.textContent).toBe("door");
+    expect(root.querySelector("[data-bind=log]")?.textContent).toContain("door");
+    expect(root.querySelector("#composer")).toBe(typed);
+    expect(typed.value).toBe("hi");
   });
 });

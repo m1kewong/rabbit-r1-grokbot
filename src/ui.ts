@@ -3,6 +3,7 @@ import { getHealth } from "./client";
 import { PERSONAS, personaById, presetById, type HealthStatus, type Persona } from "./domain";
 import { startDrive } from "./drive";
 import { type DeviceEvent, type DeviceState, type SpeakPayload } from "./device";
+import { createScribeListen } from "./scribe";
 import { CREATION_URL_VERSION, creationQr, openClawForLocation, renderDataUrl } from "./qr";
 
 const SCREEN_STYLE = "width:240px; height:282px; overflow:hidden";
@@ -96,9 +97,19 @@ function whoMark(persona: Persona): string {
   return `<i class="who-mark accent" style="background:${persona.accents[0]}"></i>`;
 }
 
+function armedCaption(state: DeviceState): string {
+  if (state.gesture.tag === "ptt-armed") {
+    const partial = state.gesture.partial.trim();
+    return partial === "" ? "Listening" : partial;
+  }
+  if (state.gesture.tag === "awaiting-utterance") return "Listening";
+  return "";
+}
+
 function statusMarkup(state: DeviceState): string {
-  if (state.gesture.tag === "ptt-armed" || state.gesture.tag === "awaiting-utterance") {
-    return `<p class="line pending"><span>Mic</span>Listening</p>`;
+  const caption = armedCaption(state);
+  if (caption !== "") {
+    return `<p class="line pending"><span>Mic</span>${escapeHtml(caption)}</p>`;
   }
   if (state.turn.tag === "pending") return `<p class="line pending"><span>Link</span>Sending</p>`;
   if (state.turn.tag === "failed") return `<p class="line failed"><span>Link</span>No reply</p>`;
@@ -162,7 +173,7 @@ function screenMarkup(state: DeviceState, persona: Persona, mark: "bare" | null)
     <p class="ready"${open ? " hidden" : ""}>READY</p>
     <div class="sheet${listening ? " live" : ""}"${open ? "" : " hidden"}>
       <div class="wave" aria-hidden="true">${bars()}</div>
-      <p class="listen">${listening ? "Listening" : ""}</p>
+      <p class="listen">${escapeHtml(armedCaption(state))}</p>
       <input id="composer" class="composer" aria-label="Message" placeholder="Ask anything..." value="${escapeHtml(state.composer)}" />
       <button type="button" data-send="1" aria-label="Send">${SEND_ICON}</button>
     </div>
@@ -320,7 +331,7 @@ function applyLive(scope: ParentNode, state: DeviceState, persona: Persona): voi
     if (gif instanceof HTMLImageElement && gif.getAttribute("src") !== gifSrc) gif.setAttribute("src", gifSrc);
   }
   const listen = scope.querySelector(".listen");
-  if (listen) listen.textContent = listening ? "Listening" : "";
+  if (listen) listen.textContent = armedCaption(state);
   const ticks = scope.querySelector("[data-bind=ticks]");
   if (ticks) {
     const marks = ticks.querySelectorAll("i");
@@ -638,6 +649,11 @@ export function boot(root: HTMLElement, target: Window): void {
     now: () => Date.now(),
     loadToken: () => browserTokens(target).load(),
     capture: () => captureSpeech(target),
+    streamListen: createScribeListen({
+      target,
+      now: () => Date.now(),
+      chatBearer: () => browserTokens(target).load(),
+    }),
     hasMic: () => Boolean((target as R1Window).SpeechRecognition ?? (target as R1Window).webkitSpeechRecognition),
     speak: postSpeech,
     exit: exitWebView,

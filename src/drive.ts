@@ -8,6 +8,15 @@ import {
   type SpeakPayload,
 } from "./device";
 
+export type StreamSession = {
+  stop(): Promise<string | null>;
+  cancel(): void;
+};
+
+export type StreamListen = (callbacks: {
+  onPartial(text: string): void;
+}) => StreamSession | null | Promise<StreamSession | null>;
+
 export type DrivePorts = {
   now(): number;
   loadToken(): Promise<string | null>;
@@ -22,17 +31,22 @@ export type DrivePorts = {
     CreationVoiceHandler?: { postMessage(message: string): void };
   };
   hasMic?: () => boolean;
+  streamListen?: StreamListen;
 };
 
 const STT_GRACE_MS = 1_200;
 
+type Ear =
+  | { readonly tag: "opening" }
+  | { readonly tag: "stream"; readonly session: StreamSession }
+  | { tag: "native"; transcript: string | null; cancelGrace: (() => void) | null }
+  | { tag: "capture"; transcript: string | null; readonly pending: Promise<string | null> }
+  | { readonly tag: "absent" };
+
 type ListenSession = {
-  native: boolean;
-  absent: boolean;
-  stopped: boolean;
-  transcript: string | null;
-  pending: Promise<string | null> | null;
-  cancelGrace: (() => void) | null;
+  readonly generation: number;
+  phase: "holding" | "released";
+  ear: Ear;
 };
 
 type VoiceBridge = { postMessage(message: string): void };
@@ -51,6 +65,7 @@ export function startDrive(ports: DrivePorts): {
   const queue: DeviceEvent[] = [];
   let pumping = false;
   let cancelTimer: (() => void) | null = null;
+  let generation = 0;
   let listen: ListenSession | null = null;
   const slots: ReplySlot[] = [];
 
@@ -136,65 +151,105 @@ export function startDrive(ports: DrivePorts): {
     return bridgeOf(ports.pluginTarget) ?? bridgeOf(globalThis);
   }
 
+  function owns(session: ListenSession): boolean {
+    return listen?.generation === session.generation;
+  }
+
+  function isPromise(value: StreamSession | Promise<StreamSession | null>): value is Promise<StreamSession | null> {
+    return typeof (value as { then?: unknown }).then === "function";
+  }
+
   function deliver(session: ListenSession, heard: string | null, ear?: "r1" | "absent"): void {
-    if (listen !== session) return;
-    session.cancelGrace?.();
-    session.cancelGrace = null;
+    if (!owns(session)) return;
+    if (session.ear.tag === "native") {
+      session.ear.cancelGrace?.();
+      session.ear.cancelGrace = null;
+    }
     listen = null;
     dispatch(ear ? { type: "utterance", heard, ear } : { type: "utterance", heard });
   }
 
-  function beginListen(): void {
+  function fillHandset(session: ListenSession): void {
+    if (!owns(session) || session.phase !== "holding") return;
     const handler = voiceHandler();
     if (handler) {
-      const session: ListenSession = {
-        native: true,
-        absent: false,
-        stopped: false,
-        transcript: null,
-        pending: null,
-        cancelGrace: null,
-      };
-      listen = session;
+      session.ear = { tag: "native", transcript: null, cancelGrace: null };
       try {
         handler.postMessage("start");
       } catch {
-        session.transcript = "";
+        if (session.ear.tag === "native") session.ear.transcript = "";
       }
       return;
     }
     if (ports.hasMic && !ports.hasMic()) {
-      listen = {
-        native: false,
-        absent: true,
-        stopped: false,
-        transcript: "",
-        pending: null,
-        cancelGrace: null,
-      };
+      session.ear = { tag: "absent" };
       return;
     }
-    const session: ListenSession = {
-      native: false,
-      absent: false,
-      stopped: false,
-      transcript: null,
-      pending: ports.capture(),
-      cancelGrace: null,
-    };
-    listen = session;
-    void session.pending?.then(
+    const pending = ports.capture();
+    session.ear = { tag: "capture", transcript: null, pending };
+    void pending.then(
       (heard) => {
-        if (listen !== session) return;
-        session.transcript = heard ?? "";
-        if (session.stopped) deliver(session, session.transcript);
+        if (!owns(session) || session.ear.tag !== "capture") return;
+        session.ear.transcript = heard ?? "";
+        if (session.phase === "released") deliver(session, session.ear.transcript);
       },
       () => {
-        if (listen !== session) return;
-        session.transcript = "";
-        if (session.stopped) deliver(session, "");
+        if (!owns(session) || session.ear.tag !== "capture") return;
+        session.ear.transcript = "";
+        if (session.phase === "released") deliver(session, "");
       },
     );
+  }
+
+  function finishOpen(session: ListenSession, handle: StreamSession | null): void {
+    if (!owns(session)) {
+      handle?.cancel();
+      return;
+    }
+    if (handle === null) {
+      if (session.phase === "holding") fillHandset(session);
+      else deliver(session, "");
+      return;
+    }
+    session.ear = { tag: "stream", session: handle };
+    if (session.phase === "released") {
+      void handle.stop().then(
+        (text) => deliver(session, text),
+        () => deliver(session, ""),
+      );
+    }
+  }
+
+  function beginListen(): void {
+    const session: ListenSession = {
+      generation: (generation += 1),
+      phase: "holding",
+      ear: { tag: "opening" },
+    };
+    listen = session;
+    let started: StreamSession | null | Promise<StreamSession | null> | undefined;
+    try {
+      started = ports.streamListen?.({
+        onPartial(text) {
+          if (!owns(session) || session.ear.tag !== "stream") return;
+          dispatch({ type: "partial", text });
+        },
+      });
+    } catch {
+      started = null;
+    }
+    if (started === undefined || started === null) {
+      fillHandset(session);
+      return;
+    }
+    if (isPromise(started)) {
+      void started.then(
+        (handle) => finishOpen(session, handle),
+        () => finishOpen(session, null),
+      );
+      return;
+    }
+    session.ear = { tag: "stream", session: started };
   }
 
   function endListen(): void {
@@ -203,30 +258,48 @@ export function startDrive(ports: DrivePorts): {
       dispatch({ type: "utterance", heard: null });
       return;
     }
-    session.stopped = true;
-    if (session.absent) {
-      deliver(session, null, "absent");
-      return;
-    }
-    if (session.native) {
-      try {
-        voiceHandler()?.postMessage("stop");
-      } catch {
-        deliver(session, session.transcript ?? "", "r1");
+    if (session.phase === "released") return;
+    session.phase = "released";
+    switch (session.ear.tag) {
+      case "opening":
+        return;
+      case "stream": {
+        const handle = session.ear.session;
+        void handle.stop().then(
+          (text) => deliver(session, text),
+          () => deliver(session, ""),
+        );
         return;
       }
-      if (listen !== session) return;
-      if (session.transcript !== null) {
-        deliver(session, session.transcript, "r1");
+      case "native": {
+        try {
+          voiceHandler()?.postMessage("stop");
+        } catch {
+          deliver(session, session.ear.transcript ?? "", "r1");
+          return;
+        }
+        if (!owns(session)) return;
+        if (session.ear.transcript !== null) {
+          deliver(session, session.ear.transcript, "r1");
+          return;
+        }
+        session.ear.cancelGrace = ports.schedule(STT_GRACE_MS, () => {
+          if (!owns(session)) return;
+          deliver(session, "", "r1");
+        });
         return;
       }
-      session.cancelGrace = ports.schedule(STT_GRACE_MS, () => {
-        if (listen !== session) return;
-        deliver(session, "", "r1");
-      });
-      return;
+      case "absent":
+        deliver(session, null, "absent");
+        return;
+      case "capture":
+        if (session.ear.transcript !== null) deliver(session, session.ear.transcript);
+        return;
+      default: {
+        const unreachable: never = session.ear;
+        return unreachable;
+      }
     }
-    if (session.transcript !== null) deliver(session, session.transcript);
   }
 
   if (ports.pluginTarget) {
@@ -234,9 +307,9 @@ export function startDrive(ports: DrivePorts): {
       const transcript = readSttEnded(data);
       if (transcript === undefined) return;
       const session = listen;
-      if (!session?.native) return;
-      session.transcript = transcript;
-      if (!session.stopped) return;
+      if (!session || session.ear.tag !== "native") return;
+      session.ear.transcript = transcript;
+      if (session.phase !== "released") return;
       deliver(session, transcript, "r1");
     };
   }

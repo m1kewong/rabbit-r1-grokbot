@@ -271,4 +271,261 @@ describe("startDrive", () => {
     expect(calls).toEqual([]);
     expect(screens.at(-1)?.turn.tag).toBe("no-mic");
   });
+
+  it("posts one stream utterance and keeps partials off the chat", async () => {
+    const calls: string[] = [];
+    const posts: string[] = [];
+    const screens: DeviceState[] = [];
+    let emit: (text: string) => void = () => {};
+    vi.stubGlobal("fetch", async (_url: string, init?: RequestInit) => {
+      calls.push((JSON.parse(String(init?.body)) as { message: string }).message);
+      return new Response(JSON.stringify({ ok: true, reply: "ok", model: "grok", personaId: "friday", routedToGrokBot: true }));
+    });
+    const drive = startDrive({
+      now: () => 0,
+      loadToken: () => Promise.resolve(null),
+      capture: () => Promise.reject(new Error("web speech unused")),
+      speak() {},
+      exit() {},
+      schedule: () => () => {},
+      render(state) {
+        screens.push(state);
+      },
+      pluginTarget: {
+        CreationVoiceHandler: { postMessage(message: string) { posts.push(message); } },
+      },
+      streamListen(callbacks) {
+        emit = callbacks.onPartial;
+        return {
+          stop: () => Promise.resolve("bay door"),
+          cancel() {},
+        };
+      },
+    });
+    drive.control("longPressStart");
+    expect(posts).toEqual([]);
+    emit("bay");
+    expect(screens.at(-1)?.gesture).toEqual({ tag: "ptt-armed", partial: "bay" });
+    expect(calls).toEqual([]);
+    drive.control("longPressEnd");
+    expect(screens.at(-1)?.gesture.tag).toBe("awaiting-utterance");
+    await vi.waitFor(() => expect(calls).toEqual(["bay door"]));
+    expect(posts).toEqual([]);
+  });
+
+  it("falls through to the handset when streaming is missing, null, or rejected", async () => {
+    const posts: string[] = [];
+    const pluginTarget = {
+      CreationVoiceHandler: { postMessage(message: string) { posts.push(message); } },
+    };
+    const missing = startDrive({
+      now: () => 0,
+      loadToken: () => Promise.resolve(null),
+      capture: () => Promise.reject(new Error("unused")),
+      speak() {},
+      exit() {},
+      schedule: () => () => {},
+      render() {},
+      pluginTarget,
+      streamListen: () => null,
+    });
+    missing.control("longPressStart");
+    expect(posts).toEqual(["start"]);
+
+    const thrown = startDrive({
+      now: () => 0,
+      loadToken: () => Promise.resolve(null),
+      capture: () => Promise.reject(new Error("unused")),
+      speak() {},
+      exit() {},
+      schedule: () => () => {},
+      render() {},
+      pluginTarget,
+      streamListen() {
+        throw new Error("no audio");
+      },
+    });
+    thrown.control("longPressStart");
+    expect(posts).toEqual(["start", "start"]);
+
+    let rejectOpen: (reason: unknown) => void = () => {};
+    let resolveOpen: (handle: { stop(): Promise<string | null>; cancel(): void } | null) => void = () => {};
+    const opened = startDrive({
+      now: () => 0,
+      loadToken: () => Promise.resolve(null),
+      capture: () => Promise.reject(new Error("unused")),
+      speak() {},
+      exit() {},
+      schedule: () => () => {},
+      render() {},
+      pluginTarget,
+      streamListen: () => new Promise((resolve, reject) => {
+        resolveOpen = resolve;
+        rejectOpen = reject;
+      }),
+    });
+    opened.control("longPressStart");
+    expect(posts).toEqual(["start", "start"]);
+    rejectOpen(new Error("down"));
+    await Promise.resolve();
+    await Promise.resolve();
+    expect(posts).toEqual(["start", "start", "start"]);
+
+    const quiet = startDrive({
+      now: () => 0,
+      loadToken: () => Promise.resolve(null),
+      capture: () => Promise.reject(new Error("unused")),
+      speak() {},
+      exit() {},
+      schedule: () => () => {},
+      render() {},
+      pluginTarget,
+      streamListen: () => new Promise((resolve) => {
+        resolveOpen = resolve;
+      }),
+    });
+    quiet.control("longPressStart");
+    expect(posts).toEqual(["start", "start", "start"]);
+    resolveOpen(null);
+    await Promise.resolve();
+    await Promise.resolve();
+    expect(posts).toEqual(["start", "start", "start", "start"]);
+  });
+
+  it("does not start the handset after release, and a late handle is the one utterance", async () => {
+    const calls: string[] = [];
+    const posts: string[] = [];
+    const screens: DeviceState[] = [];
+    let resolveOpen: (handle: { stop(): Promise<string>; cancel(): void } | null) => void = () => {};
+    vi.stubGlobal("fetch", async (_url: string, init?: RequestInit) => {
+      calls.push((JSON.parse(String(init?.body)) as { message: string }).message);
+      return new Response(JSON.stringify({ ok: true, reply: "ok", model: "grok", personaId: "friday", routedToGrokBot: true }));
+    });
+    const drive = startDrive({
+      now: () => 0,
+      loadToken: () => Promise.resolve(null),
+      capture: () => Promise.reject(new Error("unused")),
+      speak() {},
+      exit() {},
+      schedule: () => () => {},
+      render(state) {
+        screens.push(state);
+      },
+      pluginTarget: {
+        CreationVoiceHandler: { postMessage(message: string) { posts.push(message); } },
+      },
+      streamListen: () => new Promise((resolve) => {
+        resolveOpen = resolve;
+      }),
+    });
+    drive.control("longPressStart");
+    drive.control("longPressEnd");
+    expect(posts).toEqual([]);
+    expect(calls).toEqual([]);
+    resolveOpen(null);
+    await Promise.resolve();
+    await Promise.resolve();
+    expect(posts).toEqual([]);
+    expect(calls).toEqual([]);
+    expect(screens.at(-1)?.turn).toEqual({ tag: "silent" });
+
+    let stopped = false;
+    const late = startDrive({
+      now: () => 0,
+      loadToken: () => Promise.resolve(null),
+      capture: () => Promise.reject(new Error("unused")),
+      speak() {},
+      exit() {},
+      schedule: () => () => {},
+      render(state) {
+        screens.push(state);
+      },
+      pluginTarget: {
+        CreationVoiceHandler: { postMessage(message: string) { posts.push(message); } },
+      },
+      streamListen: () => new Promise((resolve) => {
+        resolveOpen = resolve;
+      }),
+    });
+    late.control("longPressStart");
+    late.control("longPressEnd");
+    resolveOpen({
+      stop: () => {
+        stopped = true;
+        return Promise.resolve("late");
+      },
+      cancel() {},
+    });
+    await vi.waitFor(() => expect(calls).toEqual(["late"]));
+    expect(stopped).toBe(true);
+    expect(posts).toEqual([]);
+  });
+
+  it("cancels a stream that arrives after the next hold and stays silent when stop fails", async () => {
+    const calls: string[] = [];
+    const posts: string[] = [];
+    const screens: DeviceState[] = [];
+    const resolvers: ((handle: { stop(): Promise<string>; cancel(): void } | null) => void)[] = [];
+    let cancelled = false;
+    vi.stubGlobal("fetch", async (_url: string, init?: RequestInit) => {
+      calls.push((JSON.parse(String(init?.body)) as { message: string }).message);
+      return new Response(JSON.stringify({ ok: true, reply: "ok", model: "grok", personaId: "friday", routedToGrokBot: true }));
+    });
+    const drive = startDrive({
+      now: () => 0,
+      loadToken: () => Promise.resolve(null),
+      capture: () => Promise.reject(new Error("unused")),
+      speak() {},
+      exit() {},
+      schedule: () => () => {},
+      render(state) {
+        screens.push(state);
+      },
+      pluginTarget: {
+        CreationVoiceHandler: { postMessage(message: string) { posts.push(message); } },
+      },
+      streamListen: () => new Promise((resolve) => {
+        resolvers.push(resolve);
+      }),
+    });
+    drive.control("longPressStart");
+    drive.control("longPressEnd");
+    drive.control("longPressStart");
+    resolvers[0]?.({
+      stop: () => Promise.resolve("stale"),
+      cancel() {
+        cancelled = true;
+      },
+    });
+    await Promise.resolve();
+    expect(cancelled).toBe(true);
+    expect(calls).toEqual([]);
+    expect(posts).toEqual([]);
+
+    const failed = startDrive({
+      now: () => 0,
+      loadToken: () => Promise.resolve(null),
+      capture: () => Promise.reject(new Error("unused")),
+      speak() {},
+      exit() {},
+      schedule: () => () => {},
+      render(state) {
+        screens.push(state);
+      },
+      pluginTarget: {
+        CreationVoiceHandler: { postMessage(message: string) { posts.push(message); } },
+      },
+      streamListen: () => ({
+        stop: () => Promise.reject(new Error("socket")),
+        cancel() {},
+      }),
+    });
+    failed.control("longPressStart");
+    failed.control("longPressEnd");
+    await Promise.resolve();
+    await Promise.resolve();
+    expect(posts).toEqual([]);
+    expect(calls).toEqual([]);
+    expect(screens.at(-1)?.turn).toEqual({ tag: "silent" });
+  });
 });

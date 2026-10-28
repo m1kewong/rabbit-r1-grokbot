@@ -12,7 +12,7 @@ const SIDE_CLICK_MS = 250 as const;
 export type Gesture =
   | { readonly tag: "idle" }
   | { readonly tag: "side-pending"; readonly sinceMs: number }
-  | { readonly tag: "ptt-armed" }
+  | { readonly tag: "ptt-armed"; readonly partial: string }
   | { readonly tag: "awaiting-utterance" }
   | { readonly tag: "drafting" };
 
@@ -42,6 +42,7 @@ export type DeviceEvent =
   | { readonly type: "sideTimer"; readonly nowMs: number }
   | { readonly type: "longPressStart" }
   | { readonly type: "longPressEnd" }
+  | { readonly type: "partial"; readonly text: string }
   | { readonly type: "utterance"; readonly heard: string | null; readonly ear?: "r1" | "absent" }
   | { readonly type: "toggleDraft" }
   | { readonly type: "sendDraft" }
@@ -145,7 +146,7 @@ function onLongPressStart(state: DeviceState): DeviceStep {
   if (state.gesture.tag === "ptt-armed") return same(state);
   const cancel = state.gesture.tag === "side-pending";
   return {
-    state: { ...state, gesture: { tag: "ptt-armed" } },
+    state: { ...state, gesture: { tag: "ptt-armed", partial: "" } },
     effects: cancel
       ? [{ type: "cancel-wait" }, { type: "ptt-start" }]
       : [{ type: "ptt-start" }],
@@ -174,6 +175,11 @@ function onSendDraft(state: DeviceState): DeviceStep {
   const text = state.composer.trim();
   if (text === "" || state.turn.tag === "pending") return same({ ...state, gesture: { tag: "idle" } });
   return submit(state, text);
+}
+
+function onPartial(state: DeviceState, text: string): DeviceStep {
+  if (state.gesture.tag !== "ptt-armed" || state.gesture.partial === text) return same(state);
+  return same({ ...state, gesture: { tag: "ptt-armed", partial: text } });
 }
 
 function onUtterance(state: DeviceState, heard: string | null, ear?: "r1" | "absent"): DeviceStep {
@@ -240,6 +246,8 @@ export function reduceDevice(state: DeviceState, event: DeviceEvent): DeviceStep
       return onLongPressStart(state);
     case "longPressEnd":
       return onLongPressEnd(state);
+    case "partial":
+      return onPartial(state, event.text);
     case "toggleDraft":
       return onToggleDraft(state);
     case "sendDraft":
