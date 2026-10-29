@@ -75,16 +75,29 @@ type RunId = string & { readonly __brand: "RunId" };
 type DeviceToken = string & { readonly __brand: "DeviceToken" };
 type Nonce = string & { readonly __brand: "Nonce" };
 
+export type BridgeService = {
+  fetch(input: RequestInfo | URL, init?: RequestInit): Promise<Response>;
+};
+
+export type BridgeLane = {
+  readonly tag: "request";
+  readonly service: BridgeService | null;
+};
+
 export type GatewayBindings = {
   readonly EVEN_G2_BRIDGE_URL?: string;
   readonly EVEN_G2_TOKEN?: string;
   readonly GATEWAY_TOKEN?: string;
   readonly ALLOW_ANY_TOKEN?: string;
+  readonly EVEN_G2_BRIDGE?: BridgeService;
+  readonly ELEVENLABS_API_KEY?: string;
 };
 
 export type GatewayConfig = {
   readonly bridgeUrl: string;
   readonly bridgeToken: string | null;
+  readonly bridgeService?: BridgeService | null;
+  readonly elevenLabsApiKey?: string | null;
 } & (
   | { readonly allowAnyToken: true; readonly gatewayToken: string | null }
   | { readonly allowAnyToken: false; readonly gatewayToken: string }
@@ -120,7 +133,7 @@ export type Served =
   | { readonly kind: "static" };
 
 export type GatewayHost = {
-  receive(request: HttpRequest): Promise<Served>;
+  receive(request: HttpRequest, lane?: BridgeLane): Promise<Served>;
 };
 
 const CORS_HEADERS = {
@@ -138,13 +151,17 @@ function blank(value: string | undefined): string | null {
 export function parseEnv(source: GatewayBindings): ParsedEnv {
   const allowAnyToken = source.ALLOW_ANY_TOKEN === "true";
   const gatewayToken = blank(source.GATEWAY_TOKEN);
-  const bridgeUrl = (blank(source.EVEN_G2_BRIDGE_URL) ?? DEFAULT_BRIDGE).replace(/\/+$/, "");
-  const bridgeToken = blank(source.EVEN_G2_TOKEN);
+  const shared = {
+    bridgeUrl: (blank(source.EVEN_G2_BRIDGE_URL) ?? DEFAULT_BRIDGE).replace(/\/+$/, ""),
+    bridgeToken: blank(source.EVEN_G2_TOKEN),
+    bridgeService: source.EVEN_G2_BRIDGE ?? null,
+    elevenLabsApiKey: blank(source.ELEVENLABS_API_KEY),
+  };
   if (!allowAnyToken) {
     if (gatewayToken === null) return { ok: false, error: "missing-gateway-token" };
-    return { ok: true, config: { allowAnyToken: false, gatewayToken, bridgeUrl, bridgeToken } };
+    return { ok: true, config: { allowAnyToken: false, gatewayToken, ...shared } };
   }
-  return { ok: true, config: { allowAnyToken: true, gatewayToken, bridgeUrl, bridgeToken } };
+  return { ok: true, config: { allowAnyToken: true, gatewayToken, ...shared } };
 }
 
 function isRecord(value: unknown): value is Record<string, unknown> {
@@ -205,6 +222,35 @@ function upstreamModel(model: string): UpstreamModel | null {
   return model as UpstreamModel;
 }
 
+type ResolvedConfig = GatewayConfig & {
+  readonly bridgeService: BridgeService | null;
+  readonly elevenLabsApiKey: string | null;
+};
+
+type ChatTransport =
+  | { readonly tag: "binding"; readonly service: BridgeService }
+  | { readonly tag: "global" };
+
+function resolveConfig(config: GatewayConfig): ResolvedConfig {
+  return {
+    ...config,
+    bridgeService: config.bridgeService ?? null,
+    elevenLabsApiKey: config.elevenLabsApiKey ?? null,
+  };
+}
+
+function selectTransport(config: ResolvedConfig, lane: BridgeLane | undefined): ChatTransport {
+  if (lane?.tag === "request") {
+    return lane.service ? { tag: "binding", service: lane.service } : { tag: "global" };
+  }
+  return config.bridgeService ? { tag: "binding", service: config.bridgeService } : { tag: "global" };
+}
+
+function transportFetch(transport: ChatTransport, url: string, init: RequestInit): Promise<Response> {
+  if (transport.tag === "binding") return transport.service.fetch(url, init);
+  return fetch(url, init);
+}
+
 async function completeChat(
   input: {
     readonly message: string;
@@ -213,12 +259,13 @@ async function completeChat(
     readonly token: string | null;
   },
   config: GatewayConfig,
+  transport: ChatTransport,
 ): Promise<Extract<ChatResult, { ok: true }>> {
   const outbound = plainUtterance(input.message);
   const bearer = input.token ?? config.bridgeToken;
   if (!bearer) return localResult(input.personaId, outbound);
   try {
-    const response = await fetch(bridgeCompletionsUrl(config.bridgeUrl), {
+    const response = await transportFetch(transport, bridgeCompletionsUrl(config.bridgeUrl), {
       method: "POST",
       headers: {
         "content-type": "application/json",
@@ -905,7 +952,7 @@ function startInterval(fire: () => void): () => void {
   return () => clearInterval(handle);
 }
 
-function attachSocket(socket: SocketPort, config: GatewayConfig, book: TokenBook): void {
+function attachSocket(socket: SocketPort, config: ResolvedConfig, book: TokenBook, transport: ChatTransport): void {
   const ctx: StepContext = { config, book };
   let session: Session = { tag: "idle" };
   let cancelTicks: (() => void) | null = null;
@@ -939,6 +986,7 @@ function attachSocket(socket: SocketPort, config: GatewayConfig, book: TokenBook
               token: null,
             },
             config,
+            transport,
           ).then((chat) => {
             if (session.tag === "closed") return;
             apply(step(session, { type: "model", requestId: effect.requestId, fullText: chat.reply, finish: true, nowMs: Date.now() }, ctx));
@@ -987,14 +1035,128 @@ function createBook(): TokenBook {
   };
 }
 
-const CHAT_PATHS = new Set(["/api/chat", "/v1/chat/completions"]);
+const SCRIBE_TOKEN_URL = "https://api.elevenlabs.io/v1/single-use-token/realtime_scribe";
+
+const STT_FAILURES = {
+  unauthorized: { status: 401, error: "unauthorized" },
+  "stt-unconfigured": { status: 503, error: "stt-unconfigured" },
+  "stt-upstream-failed": { status: 502, error: "stt-upstream-failed" },
+} as const;
+
+function sttError(error: keyof typeof STT_FAILURES): HttpResponse {
+  const failure = STT_FAILURES[error];
+  return jsonResponse(failure.status, { ok: false, error: failure.error }, true);
+}
+
+function sttPresented(request: HttpRequest): string | null {
+  let bodyToken: unknown;
+  if (request.body !== null && request.body.trim() !== "") {
+    try {
+      const value: unknown = JSON.parse(request.body);
+      if (isRecord(value)) bodyToken = value.token;
+    } catch {
+      bodyToken = undefined;
+    }
+  }
+  return bearerFrom(bodyToken, request.headers.authorization);
+}
+
+function sttCallerAllowed(config: ResolvedConfig, presented: string | null): boolean {
+  if (config.allowAnyToken) return true;
+  return presented !== null && (presented === config.gatewayToken || presented === config.bridgeToken);
+}
+
+function upstreamToken(value: unknown): string | null {
+  if (!isRecord(value) || typeof value.token !== "string" || value.token.trim() === "") return null;
+  return value.token;
+}
+
+async function handleStt(request: HttpRequest, config: ResolvedConfig): Promise<HttpResponse> {
+  if (!sttCallerAllowed(config, sttPresented(request))) return sttError("unauthorized");
+  if (config.elevenLabsApiKey === null) return sttError("stt-unconfigured");
+  try {
+    const response = await fetch(SCRIBE_TOKEN_URL, {
+      method: "POST",
+      headers: { "xi-api-key": config.elevenLabsApiKey },
+    });
+    if (!response.ok) return sttError("stt-upstream-failed");
+    const token = upstreamToken(await response.json());
+    if (token === null) return sttError("stt-upstream-failed");
+    return jsonResponse(200, { ok: true, token }, true);
+  } catch {
+    return sttError("stt-upstream-failed");
+  }
+}
+
+async function handleApiChat(request: HttpRequest, config: ResolvedConfig, transport: ChatTransport): Promise<HttpResponse> {
+  const parsed = parseApiChat(request);
+  if (!parsed) return badRequest();
+  const result = await completeChat(parsed, config, transport);
+  return jsonResponse(200, chatPayload(result), true);
+}
+
+async function handleCompletions(request: HttpRequest, config: ResolvedConfig, transport: ChatTransport): Promise<HttpResponse> {
+  const parsed = parseCompletions(request);
+  if (!parsed) return badRequest();
+  const result = await completeChat(parsed, config, transport);
+  return jsonResponse(200, openAiPayload(result), true);
+}
+
+const POST_ROUTES = [
+  { id: "chat", path: "/api/chat" },
+  { id: "completions", path: "/v1/chat/completions" },
+  { id: "stt-token", path: "/api/stt/token" },
+] as const;
+
+type PostId = (typeof POST_ROUTES)[number]["id"];
+
+const CHAT_PATHS: ReadonlySet<string> = new Set(POST_ROUTES.map((route) => route.path));
+
+const POST_HANDLERS = {
+  chat: handleApiChat,
+  completions: handleCompletions,
+  "stt-token": handleStt,
+} as const;
+
+type PostHandlerId = keyof typeof POST_HANDLERS;
+type PostHandlersMatch = PostId extends PostHandlerId ? (PostHandlerId extends PostId ? true : never) : never;
+const postHandlersMatch: PostHandlersMatch = true;
+void postHandlersMatch;
+
+function routeId(path: string): PostId | null {
+  for (const route of POST_ROUTES) {
+    if (route.path === path) return route.id;
+  }
+  return null;
+}
+
+async function runPost(
+  id: PostId,
+  request: HttpRequest,
+  config: ResolvedConfig,
+  transport: ChatTransport,
+): Promise<HttpResponse> {
+  switch (id) {
+    case "chat":
+      return POST_HANDLERS.chat(request, config, transport);
+    case "completions":
+      return POST_HANDLERS.completions(request, config, transport);
+    case "stt-token":
+      return POST_HANDLERS["stt-token"](request, config);
+    default: {
+      const unreachable: never = id;
+      return unreachable;
+    }
+  }
+}
 
 export function startGateway(config: GatewayConfig): GatewayHost {
   const book = createBook();
+  const resolved = resolveConfig(config);
   return {
-    async receive(request) {
+    async receive(request, lane) {
+      const transport = selectTransport(resolved, lane);
       const method = request.method.toUpperCase();
-      const headers = request.headers;
       if (method === "OPTIONS" && CHAT_PATHS.has(request.path)) {
         return { kind: "respond", response: { status: 204, headers: CORS_HEADERS, body: null } };
       }
@@ -1008,21 +1170,13 @@ export function startGateway(config: GatewayConfig): GatewayHost {
           ),
         };
       }
-      if (method === "POST" && request.path === "/api/chat") {
-        const parsed = parseApiChat(request);
-        if (!parsed) return { kind: "respond", response: badRequest() };
-        const result = await completeChat(parsed, config);
-        return { kind: "respond", response: jsonResponse(200, chatPayload(result), true) };
-      }
-      if (method === "POST" && request.path === "/v1/chat/completions") {
-        const parsed = parseCompletions(request);
-        if (!parsed) return { kind: "respond", response: badRequest() };
-        const result = await completeChat(parsed, config);
-        return { kind: "respond", response: jsonResponse(200, openAiPayload(result), true) };
+      if (method === "POST") {
+        const id = routeId(request.path);
+        if (id) return { kind: "respond", response: await runPost(id, request, resolved, transport) };
       }
       if (request.path === "/openclaw/ws") {
-        if ((headers.upgrade ?? "").toLowerCase() === "websocket") {
-          return { kind: "upgrade", attach: (socket) => attachSocket(socket, config, book) };
+        if ((request.headers.upgrade ?? "").toLowerCase() === "websocket") {
+          return { kind: "upgrade", attach: (socket) => attachSocket(socket, resolved, book, transport) };
         }
         return {
           kind: "respond",

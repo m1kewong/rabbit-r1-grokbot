@@ -86,7 +86,10 @@ const worker = {
     const parsed = parseEnv(env);
     if (!parsed.ok) return new Response(parsed.error, { status: 500 });
     host ??= startGateway(parsed.config);
-    const served = await host.receive(await toHttp(request));
+    const served = await host.receive(await toHttp(request), {
+      tag: "request",
+      service: env.EVEN_G2_BRIDGE ?? null,
+    });
     if (served.kind === "upgrade") return adopt(served.attach);
     if (served.kind === "respond") return toResponse(served.response);
     return serveStatic(request, env);
