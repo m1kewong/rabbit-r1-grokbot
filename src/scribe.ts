@@ -1,9 +1,11 @@
-import type { StreamListen, StreamSession } from "./drive";
+import type { StreamCallbacks, StreamListen, StreamSession } from "./drive";
 
 const SCRIBE_HZ = 16000;
 const TICKET_TTL_MS = 10 * 60 * 1000;
 const COMMIT_WAIT_MS = 1_200;
-const PCM_WINDOW = 4096;
+const TAIL_MS = 300;
+const PCM_WINDOW = 2048;
+const LEVEL_GAIN = 6;
 
 const MIC_CONSTRAINTS = {
   echoCancellation: true,
@@ -21,6 +23,10 @@ type AudioChunk = {
 };
 
 type ScribeToken = string & { readonly __brand: "ScribeToken" };
+
+type Mint =
+  | { readonly tag: "token"; readonly token: ScribeToken }
+  | { readonly tag: "fail"; readonly reason: string };
 
 type TokenShelf =
   | { readonly tag: "idle" }
@@ -41,6 +47,7 @@ type ScribeRun = {
   socket: WebSocket;
   stopGate: Promise<string> | null;
   commitSent: boolean;
+  sealed: boolean;
   finishStop: (() => void) | null;
 };
 
@@ -48,6 +55,7 @@ type ScribeEnv = {
   readonly target: Window;
   now(): number;
   chatBearer(): Promise<string | null>;
+  readonly tailMs?: number;
 };
 
 type AudioContextCtor = new (options?: AudioContextOptions) => AudioContext;
@@ -123,12 +131,19 @@ function pcm16Base64(samples: Float32Array, fromHz: number): string {
   return bytesToBase64(bytes);
 }
 
+type Shelf = {
+  warm(): void;
+  take(nowMs: number): Promise<ScribeToken | null>;
+  failure(): string;
+};
+
 function createShelf(
-  mint: (bearer: string | null) => Promise<ScribeToken | null>,
+  mint: (bearer: string | null) => Promise<Mint>,
   now: () => number,
   chatBearer: () => Promise<string | null>,
-): { warm(): void; take(nowMs: number): Promise<ScribeToken | null> } {
+): Shelf {
   let slot: TokenShelf = { tag: "idle" };
+  let failure = "NET";
 
   function shelfNow(): TokenShelf {
     return slot;
@@ -139,8 +154,12 @@ function createShelf(
     if (slot.tag === "fresh" && now() - slot.atMs < TICKET_TTL_MS) return;
     const task = (async () => {
       try {
-        return await mint(await chatBearer());
+        const minted = await mint(await chatBearer());
+        if (minted.tag === "token") return minted.token;
+        failure = minted.reason;
+        return null;
       } catch {
+        failure = "NET";
         return null;
       }
     })();
@@ -174,27 +193,52 @@ function createShelf(
     }
   }
 
-  return { warm: begin, take };
+  return { warm: begin, take, failure: () => failure };
 }
 
-async function mintScribeToken(bearer: string | null): Promise<ScribeToken | null> {
+const MINT_REASONS: Readonly<Record<number, string>> = {
+  401: "AUTH",
+  502: "UPSTREAM",
+  503: "NO-KEY",
+};
+
+async function mintScribeToken(bearer: string | null): Promise<Mint> {
   const headers: Record<string, string> = {};
   if (bearer) headers.authorization = `Bearer ${bearer}`;
   let response: Response;
   try {
     response = await fetch("/api/stt/token", { method: "POST", headers });
   } catch {
-    return null;
+    return { tag: "fail", reason: "NET" };
   }
-  if (!response.ok) return null;
+  if (!response.ok) return { tag: "fail", reason: MINT_REASONS[response.status] ?? `HTTP-${response.status}` };
   let body: unknown;
   try {
     body = await response.json();
   } catch {
-    return null;
+    return { tag: "fail", reason: "BAD-BODY" };
   }
-  if (!isRecord(body) || typeof body.token !== "string" || body.token.trim() === "") return null;
-  return body.token as ScribeToken;
+  if (!isRecord(body) || typeof body.token !== "string" || body.token.trim() === "") {
+    return { tag: "fail", reason: "BAD-BODY" };
+  }
+  return { tag: "token", token: body.token as ScribeToken };
+}
+
+function micFault(error: unknown): string {
+  const name = isRecord(error) || error instanceof Error ? (error as { name?: unknown }).name : undefined;
+  if (name === "NotAllowedError" || name === "SecurityError") return "MIC-DENIED";
+  if (name === "NotFoundError" || name === "OverconstrainedError") return "MIC-NONE";
+  return "MIC-ERR";
+}
+
+function rmsLevel(samples: Float32Array): number {
+  if (samples.length === 0) return 0;
+  let sum = 0;
+  for (let index = 0; index < samples.length; index += 1) {
+    const value = samples[index] ?? 0;
+    sum += value * value;
+  }
+  return Math.min(1, Math.sqrt(sum / samples.length) * LEVEL_GAIN);
 }
 
 function audioCtor(target: Window): AudioContextCtor | null {
@@ -276,14 +320,43 @@ function flush(run: ScribeRun): void {
   }
 }
 
-function applyScribeMessage(run: ScribeRun, raw: string, emitPartial: (text: string) => void): void {
+const SERVER_FAULTS: ReadonlySet<string> = new Set([
+  "quota_exceeded",
+  "rate_limited",
+  "commit_throttled",
+  "unaccepted_terms",
+  "queue_overflow",
+  "resource_exhausted",
+  "session_time_limit_exceeded",
+  "chunk_size_exceeded",
+  "insufficient_audio_activity",
+]);
+
+function serverFault(type: unknown): string | null {
+  if (typeof type !== "string") return null;
+  if (type.includes("error") || SERVER_FAULTS.has(type)) return `SRV-${type.toUpperCase()}`;
+  return null;
+}
+
+function applyScribeMessage(
+  run: ScribeRun,
+  raw: string,
+  emitPartial: (text: string) => void,
+  fault: (reason: string) => void,
+): void {
   let value: unknown;
   try {
     value = JSON.parse(raw);
   } catch {
     return;
   }
-  if (!isRecord(value) || typeof value.text !== "string") return;
+  if (!isRecord(value)) return;
+  const reason = serverFault(value.message_type);
+  if (reason !== null) {
+    fault(reason);
+    return;
+  }
+  if (typeof value.text !== "string") return;
   if (value.message_type === "partial_transcript") {
     run.latestPartial = value.text;
     emitPartial(value.text);
@@ -311,20 +384,23 @@ function socketCtor(target: Window): SocketCtor | null {
   return null;
 }
 
-function stopRun(run: ScribeRun, stopTracks: () => void): Promise<string> {
+function stopRun(run: ScribeRun, stopTracks: () => void, tailMs: number): Promise<string> {
   if (run.stopGate) return run.stopGate;
   let resolveStop: (text: string) => void = () => {};
   const gate = new Promise<string>((resolve) => {
     resolveStop = resolve;
   });
   run.stopGate = gate;
-  stopTracks();
   let done = false;
-  let timer: ReturnType<typeof setTimeout> | null = null;
+  let tailTimer: ReturnType<typeof setTimeout> | null = null;
+  let waitTimer: ReturnType<typeof setTimeout> | null = null;
   const finish = (): void => {
     if (done) return;
     done = true;
-    if (timer !== null) clearTimeout(timer);
+    if (tailTimer !== null) clearTimeout(tailTimer);
+    if (waitTimer !== null) clearTimeout(waitTimer);
+    run.sealed = true;
+    stopTracks();
     run.gate = { tag: "closed" };
     ignore(() => {
       if (run.socket.readyState === WebSocket.OPEN || run.socket.readyState === WebSocket.CONNECTING) run.socket.close();
@@ -332,25 +408,42 @@ function stopRun(run: ScribeRun, stopTracks: () => void): Promise<string> {
     resolveStop(run.committedText.trim() || run.latestPartial.trim());
   };
   run.finishStop = finish;
-  sendChunk(run, audioChunk("", true));
-  if (!done) timer = setTimeout(finish, COMMIT_WAIT_MS);
-  if (!done && (run.gate.tag === "closed" || run.socket.readyState === WebSocket.CLOSED)) finish();
+  const seal = (): void => {
+    if (done) return;
+    run.sealed = true;
+    stopTracks();
+    sendChunk(run, audioChunk("", true));
+    if (done) return;
+    waitTimer = setTimeout(finish, COMMIT_WAIT_MS);
+    if (run.gate.tag === "closed" || run.socket.readyState === WebSocket.CLOSED) finish();
+  };
+  if (tailMs > 0) tailTimer = setTimeout(seal, tailMs);
+  else seal();
   return gate;
 }
 
-function openListen(
-  env: ScribeEnv,
-  shelf: { take(nowMs: number): Promise<ScribeToken | null> },
-  callbacks: { onPartial(text: string): void },
-): Promise<StreamSession | null> {
+function openListen(env: ScribeEnv, shelf: Shelf, callbacks: StreamCallbacks): Promise<StreamSession | null> {
   let stopTracks = (): void => {};
+  const tailMs = env.tailMs ?? TAIL_MS;
+  let reported = false;
+  const fail = (reason: string): void => {
+    if (reported) return;
+    reported = true;
+    callbacks.onFail?.(reason);
+  };
   return (async (): Promise<StreamSession | null> => {
     const token = await shelf.take(env.now());
-    if (!token) return null;
+    if (!token) {
+      fail(shelf.failure());
+      return null;
+    }
     const ctx = contextFor(env.target);
     const getUserMedia = mediaGetter(env.target);
     const Ctor = socketCtor(env.target);
-    if (!ctx || !getUserMedia || !Ctor) return null;
+    if (!ctx || !getUserMedia || !Ctor) {
+      fail("NO-API");
+      return null;
+    }
     void ctx.resume().then(
       () => undefined,
       () => undefined,
@@ -358,7 +451,8 @@ function openListen(
     let stream: MediaStream;
     try {
       stream = await getUserMedia({ audio: MIC_CONSTRAINTS });
-    } catch {
+    } catch (error) {
+      fail(micFault(error));
       return null;
     }
     const tracks = stream.getTracks();
@@ -383,6 +477,7 @@ function openListen(
       socket = new Ctor(scribeSocketUrl(token));
     } catch {
       stopTracks();
+      fail("WS-FAIL");
       return null;
     }
     const run: ScribeRun = {
@@ -392,27 +487,31 @@ function openListen(
       socket,
       stopGate: null,
       commitSent: false,
+      sealed: false,
       finishStop: null,
     };
     let opened = false;
     let settled = false;
     let live = false;
+    let cancelled = false;
     const emit = (text: string): void => {
       if (live) callbacks.onPartial(text);
     };
     const session = await new Promise<StreamSession | null>((resolve) => {
-      const finish = (value: StreamSession | null): void => {
+      const finish = (value: StreamSession | null, reason: string = "WS-FAIL"): void => {
         if (settled) return;
         settled = true;
         if (value === null) {
+          fail(reason);
           stopTracks();
           ignore(() => socket.close());
         }
         resolve(value);
       };
       const handle: StreamSession = {
-        stop: () => stopRun(run, stopTracks),
+        stop: () => stopRun(run, stopTracks, tailMs),
         cancel() {
+          cancelled = true;
           stopTracks();
           run.gate = { tag: "closed" };
           ignore(() => socket.close());
@@ -429,15 +528,19 @@ function openListen(
         });
       };
       socket.onmessage = (event: MessageEvent) => {
-        applyScribeMessage(run, typeof event.data === "string" ? event.data : "", emit);
+        applyScribeMessage(run, typeof event.data === "string" ? event.data : "", emit, fail);
       };
       socket.onerror = () => {
         if (!opened) finish(null);
       };
       socket.onclose = () => {
         run.gate = { tag: "closed" };
-        if (!opened) finish(null);
-        else run.finishStop?.();
+        if (!opened) {
+          finish(null);
+          return;
+        }
+        if (!run.stopGate && !cancelled) fail("WS-CLOSED");
+        run.finishStop?.();
       };
       socket.onopen = () => markOpen();
       try {
@@ -446,11 +549,10 @@ function openListen(
         gain = ctx.createGain();
         gain.gain.value = 0;
         processor.onaudioprocess = (event) => {
-          if (run.stopGate) return;
-          const audio = pcm16Base64(
-            new Float32Array(event.inputBuffer.getChannelData(0)),
-            event.inputBuffer.sampleRate,
-          );
+          if (run.sealed) return;
+          const block = new Float32Array(event.inputBuffer.getChannelData(0));
+          callbacks.onLevel?.(rmsLevel(block));
+          const audio = pcm16Base64(block, event.inputBuffer.sampleRate);
           if (audio === "") return;
           sendChunk(run, audioChunk(audio, false));
         };
@@ -458,7 +560,7 @@ function openListen(
         processor.connect(gain);
         gain.connect(ctx.destination);
       } catch {
-        finish(null);
+        finish(null, "AUDIO");
         return;
       }
       if (socket.readyState === WebSocket.OPEN) markOpen();
@@ -475,7 +577,10 @@ export function createScribeListen(env: ScribeEnv): StreamListen {
   const shelf = createShelf(mintScribeToken, env.now, env.chatBearer);
   armWindow(env.target, () => shelf.warm());
   return (callbacks) => {
-    if (!canCapture(env.target)) return null;
+    if (!canCapture(env.target)) {
+      callbacks.onFail?.("NO-API");
+      return null;
+    }
     return openListen(env, shelf, callbacks);
   };
 }

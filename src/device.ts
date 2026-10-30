@@ -24,6 +24,13 @@ export type Turn =
   | { readonly tag: "silent"; readonly ear?: "r1" }
   | { readonly tag: "no-mic" };
 
+export type Engine = "standby" | "scribe" | "r1" | "browser" | "none";
+
+export type EarReport = {
+  readonly engine: Engine;
+  readonly note: string | null;
+};
+
 export type DeviceState = {
   readonly personaId: PersonaId;
   readonly composer: string;
@@ -33,6 +40,8 @@ export type DeviceState = {
   readonly token: string | null;
   readonly turn: Turn;
   readonly transcript: readonly ChatTurn[];
+  readonly ear: EarReport;
+  readonly level: number;
 };
 
 export type DeviceEvent =
@@ -43,6 +52,8 @@ export type DeviceEvent =
   | { readonly type: "longPressStart" }
   | { readonly type: "longPressEnd" }
   | { readonly type: "partial"; readonly text: string }
+  | { readonly type: "level"; readonly level: number }
+  | { readonly type: "ear"; readonly engine: Engine; readonly note: string | null }
   | { readonly type: "utterance"; readonly heard: string | null; readonly ear?: "r1" | "absent" }
   | { readonly type: "toggleDraft" }
   | { readonly type: "sendDraft" }
@@ -91,6 +102,8 @@ export function initialDevice(): DeviceState {
     token: null,
     turn: { tag: "idle" },
     transcript: [],
+    ear: { engine: "standby", note: null },
+    level: 0,
   };
 }
 
@@ -156,7 +169,7 @@ function onLongPressStart(state: DeviceState): DeviceStep {
 function onLongPressEnd(state: DeviceState): DeviceStep {
   if (state.gesture.tag !== "ptt-armed") return same(state);
   return {
-    state: { ...state, gesture: { tag: "awaiting-utterance" } },
+    state: { ...state, gesture: { tag: "awaiting-utterance" }, level: 0 },
     effects: [{ type: "ptt-stop" }],
   };
 }
@@ -180,6 +193,21 @@ function onSendDraft(state: DeviceState): DeviceStep {
 function onPartial(state: DeviceState, text: string): DeviceStep {
   if (state.gesture.tag !== "ptt-armed" || state.gesture.partial === text) return same(state);
   return same({ ...state, gesture: { tag: "ptt-armed", partial: text } });
+}
+
+const LEVEL_STEPS = 8;
+
+function onLevel(state: DeviceState, level: number): DeviceStep {
+  if (state.gesture.tag !== "ptt-armed") return same(state);
+  const clamped = Number.isFinite(level) ? Math.max(0, Math.min(1, level)) : 0;
+  const stepped = Math.round(clamped * LEVEL_STEPS) / LEVEL_STEPS;
+  if (stepped === state.level) return same(state);
+  return same({ ...state, level: stepped });
+}
+
+function onEar(state: DeviceState, engine: Engine, note: string | null): DeviceStep {
+  if (state.ear.engine === engine && state.ear.note === note) return same(state);
+  return same({ ...state, ear: { engine, note } });
 }
 
 function onUtterance(state: DeviceState, heard: string | null, ear?: "r1" | "absent"): DeviceStep {
@@ -248,6 +276,10 @@ export function reduceDevice(state: DeviceState, event: DeviceEvent): DeviceStep
       return onLongPressEnd(state);
     case "partial":
       return onPartial(state, event.text);
+    case "level":
+      return onLevel(state, event.level);
+    case "ear":
+      return onEar(state, event.engine, event.note);
     case "toggleDraft":
       return onToggleDraft(state);
     case "sendDraft":

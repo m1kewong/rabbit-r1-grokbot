@@ -13,9 +13,13 @@ export type StreamSession = {
   cancel(): void;
 };
 
-export type StreamListen = (callbacks: {
+export type StreamCallbacks = {
   onPartial(text: string): void;
-}) => StreamSession | null | Promise<StreamSession | null>;
+  onLevel?(level: number): void;
+  onFail?(reason: string): void;
+};
+
+export type StreamListen = (callbacks: StreamCallbacks) => StreamSession | null | Promise<StreamSession | null>;
 
 export type DrivePorts = {
   now(): number;
@@ -47,6 +51,7 @@ type ListenSession = {
   readonly generation: number;
   phase: "holding" | "released";
   ear: Ear;
+  fail: string | null;
 };
 
 type VoiceBridge = { postMessage(message: string): void };
@@ -174,6 +179,7 @@ export function startDrive(ports: DrivePorts): {
     const handler = voiceHandler();
     if (handler) {
       session.ear = { tag: "native", transcript: null, cancelGrace: null };
+      dispatch({ type: "ear", engine: "r1", note: session.fail });
       try {
         handler.postMessage("start");
       } catch {
@@ -183,8 +189,10 @@ export function startDrive(ports: DrivePorts): {
     }
     if (ports.hasMic && !ports.hasMic()) {
       session.ear = { tag: "absent" };
+      dispatch({ type: "ear", engine: "none", note: session.fail });
       return;
     }
+    dispatch({ type: "ear", engine: "browser", note: session.fail });
     const pending = ports.capture();
     session.ear = { tag: "capture", transcript: null, pending };
     void pending.then(
@@ -212,6 +220,7 @@ export function startDrive(ports: DrivePorts): {
       return;
     }
     session.ear = { tag: "stream", session: handle };
+    dispatch({ type: "ear", engine: "scribe", note: session.fail });
     if (session.phase === "released") {
       void handle.stop().then(
         (text) => deliver(session, text),
@@ -225,6 +234,7 @@ export function startDrive(ports: DrivePorts): {
       generation: (generation += 1),
       phase: "holding",
       ear: { tag: "opening" },
+      fail: null,
     };
     listen = session;
     let started: StreamSession | null | Promise<StreamSession | null> | undefined;
@@ -233,6 +243,16 @@ export function startDrive(ports: DrivePorts): {
         onPartial(text) {
           if (!owns(session) || session.ear.tag !== "stream") return;
           dispatch({ type: "partial", text });
+        },
+        onLevel(level) {
+          if (!owns(session) || session.phase !== "holding") return;
+          if (session.ear.tag !== "stream" && session.ear.tag !== "opening") return;
+          dispatch({ type: "level", level });
+        },
+        onFail(reason) {
+          if (!owns(session)) return;
+          session.fail = reason;
+          if (session.ear.tag === "stream") dispatch({ type: "ear", engine: "scribe", note: reason });
         },
       });
     } catch {
@@ -250,6 +270,7 @@ export function startDrive(ports: DrivePorts): {
       return;
     }
     session.ear = { tag: "stream", session: started };
+    dispatch({ type: "ear", engine: "scribe", note: session.fail });
   }
 
   function endListen(): void {

@@ -1,10 +1,10 @@
 // @vitest-environment happy-dom
 
 import { describe, expect, it } from "vitest";
-import { initialDevice, reduceDevice } from "../src/device";
+import { initialDevice, reduceDevice, type DeviceState } from "../src/device";
 import { startDrive } from "../src/drive";
 import { CREATION_URL_VERSION } from "../src/qr";
-import { chromeMode, paint } from "../src/ui";
+import { asrView, chromeMode, paint } from "../src/ui";
 
 describe("chromeMode", () => {
   it("keeps the cockpit on /qr even when the viewport is narrow", () => {
@@ -99,5 +99,90 @@ describe("creation composer", () => {
     expect(root.querySelector("[data-bind=log]")?.textContent).toContain("door");
     expect(root.querySelector("#composer")).toBe(typed);
     expect(typed.value).toBe("hi");
+  });
+});
+
+
+describe("asrView", () => {
+  it("says which engine heard the hold and why Scribe was skipped", () => {
+    expect(asrView({ engine: "standby", note: null })).toEqual({ text: "ASR > STANDBY", tone: "idle" });
+    expect(asrView({ engine: "scribe", note: null })).toEqual({ text: "ASR > ELEVENLABS SCRIBE", tone: "ok" });
+    expect(asrView({ engine: "scribe", note: "SRV-AUTH_ERROR" })).toEqual({
+      text: "ASR > SCRIBE ! SRV-AUTH_ERROR",
+      tone: "warn",
+    });
+    expect(asrView({ engine: "r1", note: "AUTH" })).toEqual({ text: "ASR > R1 NATIVE ! AUTH", tone: "warn" });
+    expect(asrView({ engine: "browser", note: null })).toEqual({ text: "ASR > BROWSER SR", tone: "warn" });
+    expect(asrView({ engine: "none", note: "MIC-DENIED" })).toEqual({ text: "ASR > NO MIC ! MIC-DENIED", tone: "warn" });
+  });
+});
+
+describe("handset hud", () => {
+  function screen(): { root: HTMLElement; show(state: DeviceState): void } {
+    window.history.replaceState(null, "", "/?r1=1");
+    Object.defineProperty(window, "innerWidth", { configurable: true, value: 240 });
+    const root = document.createElement("div");
+    document.body.replaceChildren(root);
+    return { root, show: (state) => paint(root, window, state, () => {}) };
+  }
+
+  it("draws the animated rings over the still plate", () => {
+    const { root, show } = screen();
+    show(initialDevice());
+    const rings = root.querySelectorAll(".neuron .hud svg.ring");
+    expect(rings).toHaveLength(4);
+    expect(root.querySelector(".neuron .hud-core")).not.toBeNull();
+    expect(root.querySelector(".neuron .hud-sweep")).not.toBeNull();
+    expect(root.querySelector(".neuron img.neuron-gif")).not.toBeNull();
+  });
+
+  it("follows the turn through idle, listen, think, and reply", () => {
+    const { root, show } = screen();
+    let state = initialDevice();
+    show(state);
+    const live = (): HTMLElement => {
+      const node = root.querySelector(".screen");
+      if (!(node instanceof HTMLElement)) throw new Error("screen");
+      return node;
+    };
+    expect(live().dataset.mode).toBe("idle");
+    expect(live().classList.contains("has-log")).toBe(false);
+    expect(root.querySelector(".ready")?.textContent).toBe("READY");
+
+    state = reduceDevice(state, { type: "longPressStart" }).state;
+    state = reduceDevice(state, { type: "level", level: 0.5 }).state;
+    show(state);
+    expect(live().dataset.mode).toBe("listen");
+    expect(live().style.getPropertyValue("--lvl")).toBe("0.5");
+    expect(root.querySelector(".listen")?.classList.contains("waiting")).toBe(true);
+
+    state = reduceDevice(state, { type: "partial", text: "早晨" }).state;
+    show(state);
+    expect(root.querySelector(".listen")?.textContent).toBe("早晨");
+    expect(root.querySelector(".listen")?.classList.contains("waiting")).toBe(false);
+
+    state = reduceDevice(state, { type: "longPressEnd" }).state;
+    state = reduceDevice(state, { type: "utterance", heard: "早晨" }).state;
+    show(state);
+    expect(live().dataset.mode).toBe("think");
+    expect(live().classList.contains("has-log")).toBe(true);
+    expect(root.querySelector(".ready")?.textContent).toBe("PROCESSING");
+    expect(live().style.getPropertyValue("--lvl")).toBe("0");
+
+    state = reduceDevice(state, { type: "reply", sent: "早晨", reply: "Good morning." }).state;
+    show(state);
+    expect(live().dataset.mode).toBe("reply");
+    expect(root.querySelector("[data-bind=log]")?.textContent).toContain("Good morning.");
+  });
+
+  it("shows the engine readout and updates it in place", () => {
+    const { root, show } = screen();
+    show(initialDevice());
+    const asr = root.querySelector(".asr");
+    expect(asr?.textContent).toBe("ASR > STANDBY");
+    show(reduceDevice(initialDevice(), { type: "ear", engine: "r1", note: "AUTH" }).state);
+    expect(root.querySelector(".asr")).toBe(asr);
+    expect(asr?.textContent).toBe("ASR > R1 NATIVE ! AUTH");
+    expect(asr?.getAttribute("data-tone")).toBe("warn");
   });
 });

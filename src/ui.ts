@@ -2,7 +2,7 @@ import "./styles.css";
 import { getHealth } from "./client";
 import { PERSONAS, personaById, presetById, type HealthStatus, type Persona } from "./domain";
 import { startDrive } from "./drive";
-import { type DeviceEvent, type DeviceState, type SpeakPayload } from "./device";
+import { type DeviceEvent, type DeviceState, type EarReport, type SpeakPayload } from "./device";
 import { createScribeListen } from "./scribe";
 import { CREATION_URL_VERSION, creationQr, openClawForLocation, renderDataUrl } from "./qr";
 
@@ -106,6 +106,43 @@ function armedCaption(state: DeviceState): string {
   return "";
 }
 
+type ScreenMode = "idle" | "listen" | "think" | "reply";
+
+function screenMode(state: DeviceState): ScreenMode {
+  if (listeningNow(state)) return "listen";
+  if (state.turn.tag === "pending") return "think";
+  if (state.turn.tag === "done") return "reply";
+  return "idle";
+}
+
+function readyText(mode: ScreenMode): string {
+  return mode === "think" ? "PROCESSING" : "READY";
+}
+
+type AsrView = { readonly text: string; readonly tone: "idle" | "ok" | "warn" };
+
+export function asrView(ear: EarReport): AsrView {
+  const note = ear.note === null ? "" : ` ! ${ear.note}`;
+  switch (ear.engine) {
+    case "standby":
+      return { text: "ASR > STANDBY", tone: "idle" };
+    case "scribe":
+      return ear.note === null
+        ? { text: "ASR > ELEVENLABS SCRIBE", tone: "ok" }
+        : { text: `ASR > SCRIBE${note}`, tone: "warn" };
+    case "r1":
+      return { text: `ASR > R1 NATIVE${note}`, tone: "warn" };
+    case "browser":
+      return { text: `ASR > BROWSER SR${note}`, tone: "warn" };
+    case "none":
+      return { text: `ASR > NO MIC${note}`, tone: "warn" };
+    default: {
+      const unreachable: never = ear.engine;
+      return unreachable;
+    }
+  }
+}
+
 function statusMarkup(state: DeviceState): string {
   const caption = armedCaption(state);
   if (caption !== "") {
@@ -147,19 +184,33 @@ function neuronSrc(active: boolean): string {
   return `/${name}?v=${CREATION_URL_VERSION}`;
 }
 
+const HUD_MARKUP = `<span class="hud" aria-hidden="true">
+          <i class="hud-glow"></i>
+          <svg class="ring ring-a" viewBox="0 0 220 220"><g fill="none" stroke="currentColor"><circle cx="110" cy="110" r="105" stroke-opacity=".4" stroke-dasharray="1.5 5.2"/><circle cx="110" cy="110" r="99" stroke-width="2.6" stroke-opacity=".95" stroke-dasharray="70 137.35"/></g></svg>
+          <svg class="ring ring-b" viewBox="0 0 220 220"><g fill="none" stroke="currentColor"><circle cx="110" cy="110" r="86" stroke-opacity=".22"/><circle cx="110" cy="110" r="86" stroke-width="2" stroke-dasharray="150 120.18"/></g></svg>
+          <svg class="ring ring-c" viewBox="0 0 220 220"><g fill="none" stroke="currentColor"><circle cx="110" cy="110" r="64" stroke-width="7" stroke-opacity=".65" stroke-dasharray="1.4 6.98"/><circle cx="110" cy="110" r="57" stroke-opacity=".5"/></g></svg>
+          <svg class="ring ring-d" viewBox="0 0 220 220"><g fill="none" stroke="currentColor"><circle cx="110" cy="110" r="44" stroke-opacity=".5"/><path d="M110 60v9M110 151v9M60 110h9M151 110h9" stroke-width="1.5"/></g></svg>
+          <i class="hud-sweep"></i>
+          <i class="hud-core"></i>
+        </span>`;
+
 const SEND_ICON = `<svg viewBox="0 0 12 12" aria-hidden="true"><path d="M2.2 1.2 L10.6 6 L2.2 10.8 Z" fill="currentColor"/></svg>`;
 
 function screenMarkup(state: DeviceState, persona: Persona, mark: "bare" | null): string {
   const paintAttr = mark === "bare" ? ` data-paint="bare"` : "";
   const open = sheetOpen(state);
   const listening = listeningNow(state);
-  const screenClass = open ? "screen sheet-open" : "screen";
-  return `<section class="${screenClass}"${paintAttr} data-screen="stark-r1" style="${SCREEN_STYLE}">
+  const mode = screenMode(state);
+  const asr = asrView(state.ear);
+  const hasLog = logMarkup(state, persona) !== "";
+  const screenClass = `screen${open ? " sheet-open" : ""}${hasLog ? " has-log" : ""}`;
+  return `<section class="${screenClass}"${paintAttr} data-screen="stark-r1" data-mode="${mode}" style="${SCREEN_STYLE}; --lvl:${state.level}">
     <i class="tick tl"></i><i class="tick tr"></i><i class="tick bl"></i><i class="tick br"></i>
     <header class="identity">
       ${whoMark(persona)}
       <h1 data-bind="label">${escapeHtml(persona.label)}</h1>
     </header>
+    <p class="asr" data-bind="asr" data-tone="${asr.tone}">${escapeHtml(asr.text)}</p>
     <div class="actions">
       <button type="button" data-control="speaker" aria-pressed="${state.speakerOn ? "true" : "false"}">SPK</button>
       <button type="button" data-control="exit">Exit</button>
@@ -167,13 +218,14 @@ function screenMarkup(state: DeviceState, persona: Persona, mark: "bare" | null)
     <div class="hero">
       <button type="button" class="neuron" data-neuron="1" aria-label="Hold to talk" aria-pressed="${open ? "true" : "false"}">
         <img class="neuron-gif" alt="" width="220" height="220" src="${neuronSrc(open)}" />
+        ${HUD_MARKUP}
       </button>
     </div>
     <div class="log" data-bind="log">${logMarkup(state, persona)}</div>
-    <p class="ready"${open ? " hidden" : ""}>READY</p>
+    <p class="ready"${open ? " hidden" : ""}>${readyText(mode)}</p>
     <div class="sheet${listening ? " live" : ""}"${open ? "" : " hidden"}>
       <div class="wave" aria-hidden="true">${bars()}</div>
-      <p class="listen">${escapeHtml(armedCaption(state))}</p>
+      <p class="listen${armedCaption(state) === "Listening" ? " waiting" : ""}">${escapeHtml(armedCaption(state))}</p>
       <input id="composer" class="composer" aria-label="Message" placeholder="Ask anything..." value="${escapeHtml(state.composer)}" />
       <button type="button" data-send="1" aria-label="Send">${SEND_ICON}</button>
     </div>
@@ -269,11 +321,11 @@ function ensureHealth(target: Window): void {
   target.setInterval(pull, 10_000);
 }
 
-function writeLog(node: HTMLElement, state: DeviceState, persona: Persona): void {
-  const html = logMarkup(state, persona);
+function writeLog(node: HTMLElement, html: string): void {
   if (node.dataset.rendered === html) return;
   node.dataset.rendered = html;
   node.innerHTML = html;
+  node.scrollTop = node.scrollHeight;
 }
 
 function setPreset(node: Element, text: string): void {
@@ -331,7 +383,11 @@ function applyLive(scope: ParentNode, state: DeviceState, persona: Persona): voi
     if (gif instanceof HTMLImageElement && gif.getAttribute("src") !== gifSrc) gif.setAttribute("src", gifSrc);
   }
   const listen = scope.querySelector(".listen");
-  if (listen) listen.textContent = armedCaption(state);
+  if (listen instanceof HTMLElement) {
+    const caption = armedCaption(state);
+    listen.textContent = caption;
+    listen.classList.toggle("waiting", caption === "Listening");
+  }
   const ticks = scope.querySelector("[data-bind=ticks]");
   if (ticks) {
     const marks = ticks.querySelectorAll("i");
@@ -339,8 +395,22 @@ function applyLive(scope: ParentNode, state: DeviceState, persona: Persona): voi
       marks.item(index)?.classList.toggle("on", item.id === state.personaId);
     });
   }
+  const logHtml = logMarkup(state, persona);
   const log = scope.querySelector("[data-bind=log]");
-  if (log instanceof HTMLElement) writeLog(log, state, persona);
+  if (log instanceof HTMLElement) writeLog(log, logHtml);
+  if (screen instanceof HTMLElement) {
+    const mode = screenMode(state);
+    screen.dataset.mode = mode;
+    screen.classList.toggle("has-log", logHtml !== "");
+    screen.style.setProperty("--lvl", String(state.level));
+    if (ready instanceof HTMLElement) ready.textContent = readyText(mode);
+  }
+  const asr = scope.querySelector("[data-bind=asr]");
+  if (asr instanceof HTMLElement) {
+    const view = asrView(state.ear);
+    if (asr.textContent !== view.text) asr.textContent = view.text;
+    if (asr.dataset.tone !== view.tone) asr.dataset.tone = view.tone;
+  }
   const preset = scope.querySelector("[data-bind=preset]");
   if (preset) setPreset(preset, presetById(state.presetId).text);
   const speaker = scope.querySelector("[data-control=speaker]");
@@ -475,7 +545,8 @@ export function bindHardware(
   let touchY: number | null = null;
   const onTouchStart = (event: Event): void => {
     if (!(event instanceof TouchEvent)) return;
-    touchY = event.changedTouches[0]?.clientY ?? null;
+    const inLog = event.target instanceof Element && event.target.closest("[data-bind=log]") !== null;
+    touchY = inLog ? null : (event.changedTouches[0]?.clientY ?? null);
   };
   const onTouchEnd = (event: Event): void => {
     if (!(event instanceof TouchEvent) || touchY === null) return;
