@@ -5,7 +5,8 @@ import {
   type DeviceEffect,
   type DeviceEvent,
   type DeviceState,
-  type SpeakPayload,
+  type SpeakFault,
+  type SpokenReply,
 } from "./device";
 
 export type StreamSession = {
@@ -25,7 +26,7 @@ export type DrivePorts = {
   now(): number;
   loadToken(): Promise<string | null>;
   capture(): Promise<string | null>;
-  speak(payload: SpeakPayload): void;
+  speak(spoken: SpokenReply, report: (fault: SpeakFault) => void): void;
   exit(): void;
   schedule(delayMs: number, fire: () => void): () => void;
   render(state: DeviceState, dispatch: (event: DeviceEvent) => void): void;
@@ -140,7 +141,7 @@ export function startDrive(ports: DrivePorts): {
         endListen();
         break;
       case "speak":
-        ports.speak(effect.payload);
+        ports.speak(effect.spoken, (fault) => dispatch({ type: "speakFault", fault }));
         break;
       case "closeWebView":
         ports.exit();

@@ -2,7 +2,7 @@ import "./styles.css";
 import { getHealth } from "./client";
 import { PERSONAS, personaById, presetById, type HealthStatus, type Persona } from "./domain";
 import { startDrive } from "./drive";
-import { type DeviceEvent, type DeviceState, type EarReport, type SpeakPayload } from "./device";
+import { type DeviceEvent, type DeviceState, type EarReport, type SpeakFault, type SpokenReply } from "./device";
 import { createScribeListen } from "./scribe";
 import { CREATION_URL_VERSION, creationQr, openClawForLocation, renderDataUrl } from "./qr";
 
@@ -18,6 +18,7 @@ type R1Window = Window & {
   closeWebView?: { postMessage(message: string): void };
   CreationVoiceHandler?: { postMessage(message: string): void };
   PluginMessageHandler?: { postMessage(message: string): void };
+  SpeechSynthesisUtterance?: new (text?: string) => SpeechSynthesisUtterance;
   onPluginMessage?: (data: unknown) => void;
   creationStorage?: {
     secure?: { getItem(key: string): string | null; setItem(key: string, value: string): void };
@@ -155,7 +156,18 @@ function statusMarkup(state: DeviceState): string {
     const note = state.turn.ear === "r1" ? `<p class="hint">Chinese Traditional in R1 Settings</p>` : "";
     return `<p class="line failed"><span>Mic</span>No speech</p>${note}`;
   }
-  return "";
+  switch (state.speakFault) {
+    case null:
+      return "";
+    case "no-tts":
+      return `<p class="line failed"><span>SPK</span>NO TTS</p>`;
+    case "spk-fail":
+      return `<p class="line failed"><span>SPK</span>SPK FAIL</p>`;
+    default: {
+      const unreachable: never = state.speakFault;
+      return unreachable;
+    }
+  }
 }
 
 function logMarkup(state: DeviceState, persona: Persona): string {
@@ -636,8 +648,42 @@ export function browserTokens(target: Window = window): {
   };
 }
 
-export function postSpeech(payload: SpeakPayload): void {
-  (window as R1Window).PluginMessageHandler?.postMessage(JSON.stringify(payload));
+function speechLang(synth: { getVoices?: () => readonly { lang: string }[] }): string {
+  const listed = typeof synth.getVoices === "function" ? synth.getVoices() : [];
+  const voices = Array.isArray(listed) ? listed : [];
+  for (const tag of SPEECH_LANGS) {
+    const needle = tag.toLowerCase();
+    const matched = voices.some((voice) => {
+      if (typeof voice?.lang !== "string") return false;
+      const lang = voice.lang.toLowerCase().replaceAll("_", "-");
+      return lang === needle || lang.startsWith(`${needle}-`);
+    });
+    if (matched) return tag;
+  }
+  return SPEECH_LANGS[0];
+}
+
+export function postSpeech(spoken: SpokenReply, report: (fault: SpeakFault) => void): void {
+  const view = window as R1Window;
+  const handler = view.PluginMessageHandler;
+  if (typeof handler?.postMessage === "function") {
+    handler.postMessage(JSON.stringify(spoken.payload));
+    return;
+  }
+  const synth = view.speechSynthesis;
+  const Utterance = view.SpeechSynthesisUtterance;
+  if (!synth || typeof synth.speak !== "function" || typeof Utterance !== "function") {
+    report("no-tts");
+    return;
+  }
+  const lang = speechLang(synth);
+  try {
+    const utterance = new Utterance(spoken.text);
+    utterance.lang = lang;
+    synth.speak(utterance);
+  } catch {
+    report("spk-fail");
+  }
 }
 
 export function exitWebView(): void {

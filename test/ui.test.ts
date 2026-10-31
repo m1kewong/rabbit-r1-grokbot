@@ -1,10 +1,10 @@
 // @vitest-environment happy-dom
 
-import { beforeEach, describe, expect, it } from "vitest";
-import { initialDevice, reduceDevice, type DeviceState } from "../src/device";
+import { afterEach, beforeEach, describe, expect, it, vi } from "vitest";
+import { buildSpeakPayload, initialDevice, reduceDevice, type DeviceState } from "../src/device";
 import { startDrive } from "../src/drive";
 import { CREATION_URL_VERSION } from "../src/qr";
-import { asrView, boot, browserTokens, chromeMode, paint } from "../src/ui";
+import { asrView, boot, browserTokens, chromeMode, paint, postSpeech } from "../src/ui";
 
 describe("chromeMode", () => {
   it("keeps the cockpit on /qr even when the viewport is narrow", () => {
@@ -303,5 +303,261 @@ describe("paired install", () => {
     } finally {
       globalThis.fetch = previous;
     }
+  });
+});
+
+describe("postSpeech", () => {
+  afterEach(() => {
+    Reflect.deleteProperty(window, "PluginMessageHandler");
+    Reflect.deleteProperty(window, "speechSynthesis");
+    Reflect.deleteProperty(window, "SpeechSynthesisUtterance");
+  });
+
+  function spoken(text: string): { payload: ReturnType<typeof buildSpeakPayload>; text: string } {
+    return { payload: buildSpeakPayload(text), text };
+  }
+
+  function show(state: DeviceState): HTMLElement {
+    window.history.replaceState(null, "", "/?r1=1");
+    Object.defineProperty(window, "innerWidth", { configurable: true, value: 240 });
+    const root = document.createElement("div");
+    document.body.replaceChildren(root);
+    paint(root, window, state, () => {});
+    return root;
+  }
+
+  it("posts the plugin payload when the handler is present", () => {
+    const posts: string[] = [];
+    const speak = vi.fn();
+    Object.defineProperty(window, "PluginMessageHandler", {
+      configurable: true,
+      value: {
+        postMessage(message: string) {
+          posts.push(message);
+        },
+      },
+    });
+    Object.defineProperty(window, "speechSynthesis", {
+      configurable: true,
+      value: { speak, getVoices: () => [{ lang: "zh-HK" }] },
+    });
+    const report = vi.fn();
+    const reply = spoken("Ready");
+    postSpeech(reply, report);
+    expect(posts).toEqual([JSON.stringify(reply.payload)]);
+    expect(speak).not.toHaveBeenCalled();
+    expect(report).not.toHaveBeenCalled();
+
+    Object.defineProperty(window, "PluginMessageHandler", {
+      configurable: true,
+      value: {
+        postMessage() {
+          throw new Error("bridge down");
+        },
+      },
+    });
+    expect(() => postSpeech(reply, report)).toThrow("bridge down");
+    expect(speak).not.toHaveBeenCalled();
+    expect(report).not.toHaveBeenCalled();
+  });
+
+  it("speaks the raw reply in yue-HK when that is the only voice", () => {
+    const heard: { text: string; lang: string }[] = [];
+    class Utterance {
+      lang = "";
+      constructor(readonly text: string) {}
+    }
+    Object.defineProperty(window, "SpeechSynthesisUtterance", { configurable: true, value: Utterance });
+    Object.defineProperty(window, "speechSynthesis", {
+      configurable: true,
+      value: {
+        getVoices: () => [{ lang: "yue-HK" }],
+        speak(utterance: Utterance) {
+          heard.push({ text: utterance.text, lang: utterance.lang });
+          return Promise.resolve();
+        },
+      },
+    });
+    const report = vi.fn();
+    postSpeech(spoken("see >>> this"), report);
+    expect(heard).toEqual([{ text: "see >>> this", lang: "yue-HK" }]);
+    expect(report).not.toHaveBeenCalled();
+
+    heard.length = 0;
+    Object.defineProperty(window, "speechSynthesis", {
+      configurable: true,
+      value: {
+        getVoices: () => [{ lang: "en-US" }, { lang: "zh_TW" }],
+        speak(utterance: Utterance) {
+          heard.push({ text: utterance.text, lang: utterance.lang });
+        },
+      },
+    });
+    postSpeech(spoken("see >>> this"), report);
+    expect(heard).toEqual([{ text: "see >>> this", lang: "zh-TW" }]);
+
+    heard.length = 0;
+    Object.defineProperty(window, "speechSynthesis", {
+      configurable: true,
+      value: {
+        getVoices: () => [{ lang: "zh-CN-Hans" }],
+        speak(utterance: Utterance) {
+          heard.push({ text: utterance.text, lang: utterance.lang });
+        },
+      },
+    });
+    postSpeech(spoken("Ready"), report);
+    expect(heard).toEqual([{ text: "Ready", lang: "zh-CN" }]);
+    expect(report).not.toHaveBeenCalled();
+  });
+
+  it("speaks zh-HK when no voice is available", () => {
+    const heard: { text: string; lang: string }[] = [];
+    class Utterance {
+      lang = "";
+      constructor(readonly text: string) {}
+    }
+    Object.defineProperty(window, "SpeechSynthesisUtterance", { configurable: true, value: Utterance });
+    Object.defineProperty(window, "speechSynthesis", {
+      configurable: true,
+      value: {
+        getVoices: () => [],
+        speak(utterance: Utterance) {
+          heard.push({ text: utterance.text, lang: utterance.lang });
+        },
+      },
+    });
+    const report = vi.fn();
+    postSpeech(spoken("Ready"), report);
+    expect(heard).toEqual([{ text: "Ready", lang: "zh-HK" }]);
+    expect(report).not.toHaveBeenCalled();
+
+    heard.length = 0;
+    Object.defineProperty(window, "speechSynthesis", {
+      configurable: true,
+      value: {
+        speak(utterance: Utterance) {
+          heard.push({ text: utterance.text, lang: utterance.lang });
+        },
+      },
+    });
+    postSpeech(spoken("Ready"), report);
+    expect(heard).toEqual([{ text: "Ready", lang: "zh-HK" }]);
+    expect(report).not.toHaveBeenCalled();
+  });
+
+  it("reports no-tts and paints NO TTS when speech synthesis is missing", () => {
+    Object.defineProperty(window, "speechSynthesis", { configurable: true, value: undefined });
+    Object.defineProperty(window, "SpeechSynthesisUtterance", { configurable: true, value: undefined });
+    const report = vi.fn();
+    postSpeech(spoken("Ready"), report);
+    expect(report).toHaveBeenCalledTimes(1);
+    expect(report).toHaveBeenCalledWith("no-tts");
+
+    class Utterance {
+      lang = "";
+      constructor(readonly text: string) {}
+    }
+    Object.defineProperty(window, "SpeechSynthesisUtterance", { configurable: true, value: Utterance });
+    Object.defineProperty(window, "speechSynthesis", {
+      configurable: true,
+      value: { getVoices: () => [{ lang: "zh-HK" }] },
+    });
+    const missingSpeak = vi.fn();
+    postSpeech(spoken("Ready"), missingSpeak);
+    expect(missingSpeak).toHaveBeenCalledWith("no-tts");
+
+    Object.defineProperty(window, "speechSynthesis", {
+      configurable: true,
+      value: { speak() {}, getVoices: () => [] },
+    });
+    Object.defineProperty(window, "SpeechSynthesisUtterance", { configurable: true, value: undefined });
+    const missingUtterance = vi.fn();
+    postSpeech(spoken("Ready"), missingUtterance);
+    expect(missingUtterance).toHaveBeenCalledWith("no-tts");
+
+    const root = show({
+      ...initialDevice(),
+      turn: { tag: "done", text: "Hello", reply: "Ready" },
+      transcript: [{ role: "assistant", content: "Ready" }],
+      speakFault: "no-tts",
+    });
+    expect(root.querySelector("[data-bind=log] p.line.failed")?.outerHTML).toBe(
+      '<p class="line failed"><span>SPK</span>NO TTS</p>',
+    );
+    paint(
+      root,
+      window,
+      {
+        ...initialDevice(),
+        turn: { tag: "pending", text: "Hello" },
+        transcript: [{ role: "user", content: "Hello" }],
+        speakFault: "no-tts",
+      },
+      () => {},
+    );
+    expect(root.querySelector("[data-bind=log]")?.innerHTML).toContain(
+      '<p class="line pending"><span>Link</span>Sending</p>',
+    );
+    expect(root.querySelector("[data-bind=log]")?.textContent).not.toContain("NO TTS");
+    paint(
+      root,
+      window,
+      reduceDevice({ ...initialDevice(), speakFault: "no-tts" }, { type: "longPressStart" }).state,
+      () => {},
+    );
+    expect(root.querySelector("[data-bind=log]")?.innerHTML).toContain(
+      '<p class="line pending"><span>Mic</span>Listening</p>',
+    );
+    expect(root.querySelector("[data-bind=log]")?.textContent).not.toContain("NO TTS");
+  });
+
+  it("reports spk-fail and paints SPK FAIL when speak throws", () => {
+    class Utterance {
+      lang = "";
+      constructor(readonly text: string) {}
+    }
+    Object.defineProperty(window, "SpeechSynthesisUtterance", { configurable: true, value: Utterance });
+    Object.defineProperty(window, "speechSynthesis", {
+      configurable: true,
+      value: {
+        getVoices: () => [],
+        speak() {
+          throw new Error("blocked");
+        },
+      },
+    });
+    const report = vi.fn();
+    postSpeech(spoken("Ready"), report);
+    expect(report).toHaveBeenCalledTimes(1);
+    expect(report).toHaveBeenCalledWith("spk-fail");
+
+    const started = vi.fn();
+    Object.defineProperty(window, "SpeechSynthesisUtterance", {
+      configurable: true,
+      value: class {
+        constructor() {
+          throw new Error("no utterance");
+        }
+      },
+    });
+    Object.defineProperty(window, "speechSynthesis", {
+      configurable: true,
+      value: { speak: started, getVoices: () => [] },
+    });
+    const constructed = vi.fn();
+    postSpeech(spoken("Ready"), constructed);
+    expect(constructed).toHaveBeenCalledWith("spk-fail");
+    expect(started).not.toHaveBeenCalled();
+
+    const root = show({
+      ...initialDevice(),
+      turn: { tag: "done", text: "Hello", reply: "Ready" },
+      transcript: [{ role: "assistant", content: "Ready" }],
+      speakFault: "spk-fail",
+    });
+    expect(root.querySelector("[data-bind=log] p.line.failed")?.outerHTML).toBe(
+      '<p class="line failed"><span>SPK</span>SPK FAIL</p>',
+    );
   });
 });

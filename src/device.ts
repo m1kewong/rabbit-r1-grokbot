@@ -26,6 +26,8 @@ export type Turn =
 
 export type Engine = "standby" | "scribe" | "r1" | "browser" | "none";
 
+export type SpeakFault = "no-tts" | "spk-fail";
+
 export type EarReport = {
   readonly engine: Engine;
   readonly note: string | null;
@@ -37,6 +39,7 @@ export type DeviceState = {
   readonly presetId: PresetId;
   readonly gesture: Gesture;
   readonly speakerOn: boolean;
+  readonly speakFault: SpeakFault | null;
   readonly token: string | null;
   readonly turn: Turn;
   readonly transcript: readonly ChatTurn[];
@@ -60,6 +63,7 @@ export type DeviceEvent =
   | { readonly type: "toggleSpeaker" }
   | { readonly type: "token"; readonly token: string | null }
   | { readonly type: "reply"; readonly sent: string; readonly reply: string | null }
+  | { readonly type: "speakFault"; readonly fault: SpeakFault }
   | { readonly type: "exit" };
 
 declare const readAloud: unique symbol;
@@ -75,6 +79,11 @@ const SPEAK_FLAGS = {
 export type SpeakPayload = {
   readonly message: ReadAloudMessage;
 } & typeof SPEAK_FLAGS;
+
+export type SpokenReply = {
+  readonly payload: SpeakPayload;
+  readonly text: string;
+};
 
 export function buildSpeakPayload(reply: string): SpeakPayload {
   const message = `Read the following text aloud exactly, word for word. Do not add, omit, translate, or summarize anything.
@@ -92,7 +101,7 @@ export type DeviceEffect =
       readonly personaId: PersonaId;
       readonly history: readonly ChatTurn[];
     }
-  | { readonly type: "speak"; readonly payload: SpeakPayload }
+  | { readonly type: "speak"; readonly spoken: SpokenReply }
   | {
       readonly type: "armSideTimer";
       readonly fireAtMs: number;
@@ -115,6 +124,7 @@ export function initialDevice(): DeviceState {
     presetId: "status",
     gesture: { tag: "idle" },
     speakerOn: false,
+    speakFault: null,
     token: null,
     turn: { tag: "idle" },
     transcript: [],
@@ -243,17 +253,23 @@ function onUtterance(state: DeviceState, heard: string | null, ear?: "r1" | "abs
 
 function onReply(state: DeviceState, sent: string, reply: string | null): DeviceStep {
   if (state.turn.tag !== "pending" || state.turn.text !== sent) return same(state);
-  if (reply === null) return same({ ...state, turn: { tag: "failed" } });
+  if (reply === null) return same({ ...state, turn: { tag: "failed" }, speakFault: null });
   const next: DeviceState = {
     ...state,
     turn: { tag: "done", text: sent, reply },
     transcript: [...state.transcript, { role: "assistant", content: reply }],
+    speakFault: null,
   };
   if (!state.speakerOn) return same(next);
   return {
     state: next,
-    effects: [{ type: "speak", payload: buildSpeakPayload(reply) }],
+    effects: [{ type: "speak", spoken: { payload: buildSpeakPayload(reply), text: reply } }],
   };
+}
+
+function onSpeakFault(state: DeviceState, fault: SpeakFault): DeviceStep {
+  if (state.speakFault === fault) return same(state);
+  return same({ ...state, speakFault: fault });
 }
 
 export function reduceDevice(state: DeviceState, event: DeviceEvent): DeviceStep {
@@ -294,6 +310,8 @@ export function reduceDevice(state: DeviceState, event: DeviceEvent): DeviceStep
       return onUtterance(state, event.heard, event.ear);
     case "reply":
       return onReply(state, event.sent, event.reply);
+    case "speakFault":
+      return onSpeakFault(state, event.fault);
     default: {
       const unreachable: never = event;
       return unreachable;

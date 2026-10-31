@@ -177,12 +177,50 @@ describe("reduceDevice", () => {
     const quiet = reduceDevice(pending, { type: "reply", sent: pending.turn.tag === "pending" ? pending.turn.text : "", reply: "Ready" });
     expect(quiet.effects).toEqual([]);
     expect(quiet.state.transcript.at(-1)).toEqual({ role: "assistant", content: "Ready" });
+    expect(quiet.state.speakFault).toBeNull();
     const loudState = reduceDevice(pending, { type: "toggleSpeaker" }).state;
     const sent = pending.turn.tag === "pending" ? pending.turn.text : "";
     const loud = reduceDevice(loudState, { type: "reply", sent, reply: "Ready" });
-    expect(loud.effects).toEqual([{ type: "speak", payload: buildSpeakPayload("Ready") }]);
+    expect(loud.effects).toEqual([{ type: "speak", spoken: { payload: buildSpeakPayload("Ready"), text: "Ready" } }]);
+    expect(loud.state.speakFault).toBeNull();
     const exit = reduceDevice(loud.state, { type: "exit" });
     expect(exit.effects).toEqual([{ type: "closeWebView" }]);
+  });
+
+  it("keeps an assistant line with the speaker off and clears a prior speak fault", () => {
+    const pending = reduceDevice(arm(initialDevice(), 0), { type: "sideTimer", nowMs: 250 }).state;
+    const sent = pending.turn.tag === "pending" ? pending.turn.text : "";
+    const faulted = reduceDevice(pending, { type: "speakFault", fault: "spk-fail" }).state;
+    expect(faulted.speakFault).toBe("spk-fail");
+    const ignored = reduceDevice(faulted, { type: "reply", sent: "other", reply: "Ready" });
+    expect(ignored.state).toBe(faulted);
+    expect(ignored.effects).toEqual([]);
+    const quiet = reduceDevice(faulted, { type: "reply", sent, reply: "Ready" });
+    expect(quiet.effects).toEqual([]);
+    expect(quiet.state.transcript.at(-1)).toEqual({ role: "assistant", content: "Ready" });
+    expect(quiet.state.speakFault).toBeNull();
+    const failed = reduceDevice(faulted, { type: "reply", sent, reply: null });
+    expect(failed.effects).toEqual([]);
+    expect(failed.state.turn).toEqual({ tag: "failed" });
+    expect(failed.state.speakFault).toBeNull();
+    const toggled = reduceDevice(faulted, { type: "toggleSpeaker" });
+    expect(toggled.effects).toEqual([]);
+    expect(toggled.state.speakerOn).toBe(true);
+    expect(toggled.state.speakFault).toBe("spk-fail");
+  });
+
+  it("sets a speak fault and returns the same state for the same fault", () => {
+    const idle = initialDevice();
+    expect(idle.speakFault).toBeNull();
+    const first = reduceDevice(idle, { type: "speakFault", fault: "no-tts" });
+    expect(first.effects).toEqual([]);
+    expect(first.state.speakFault).toBe("no-tts");
+    const again = reduceDevice(first.state, { type: "speakFault", fault: "no-tts" });
+    expect(again.state).toBe(first.state);
+    expect(again.effects).toEqual([]);
+    const next = reduceDevice(first.state, { type: "speakFault", fault: "spk-fail" });
+    expect(next.effects).toEqual([]);
+    expect(next.state.speakFault).toBe("spk-fail");
   });
 });
 
