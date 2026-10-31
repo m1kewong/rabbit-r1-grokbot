@@ -1,5 +1,5 @@
 import { afterEach, describe, expect, it, vi } from "vitest";
-import { startDrive } from "../src/drive";
+import { startDrive, type StreamCallbacks } from "../src/drive";
 import type { DeviceState, SpeakPayload } from "../src/device";
 
 afterEach(() => {
@@ -527,5 +527,83 @@ describe("startDrive", () => {
     expect(posts).toEqual([]);
     expect(calls).toEqual([]);
     expect(screens.at(-1)?.turn).toEqual({ tag: "silent" });
+  });
+});
+
+
+describe("ear report", () => {
+  function rig(options: {
+    streamListen: NonNullable<Parameters<typeof startDrive>[0]["streamListen"]>;
+    handset?: boolean;
+    mic?: boolean;
+  }): { drive: ReturnType<typeof startDrive>; screens: DeviceState[] } {
+    const screens: DeviceState[] = [];
+    const drive = startDrive({
+      now: () => 0,
+      loadToken: () => Promise.resolve(null),
+      capture: () => Promise.resolve(null),
+      speak() {},
+      exit() {},
+      schedule: () => () => {},
+      render(state) {
+        screens.push(state);
+      },
+      hasMic: () => options.mic !== false,
+      pluginTarget: options.handset === false ? undefined : { CreationVoiceHandler: { postMessage() {} } },
+      streamListen: options.streamListen,
+    });
+    return { drive, screens };
+  }
+
+  it("names the reason Scribe was skipped when the R1 recognizer takes over", async () => {
+    const { drive, screens } = rig({
+      streamListen(callbacks) {
+        callbacks.onFail?.("AUTH");
+        return Promise.resolve(null);
+      },
+    });
+    drive.control("longPressStart");
+    await vi.waitFor(() => expect(screens.at(-1)?.ear).toEqual({ engine: "r1", note: "AUTH" }));
+  });
+
+  it("reports the browser recognizer and a missing mic with the same reason", async () => {
+    const browser = rig({
+      handset: false,
+      streamListen(callbacks) {
+        callbacks.onFail?.("NO-KEY");
+        return null;
+      },
+    });
+    browser.drive.control("longPressStart");
+    expect(browser.screens.at(-1)?.ear).toEqual({ engine: "browser", note: "NO-KEY" });
+    const bare = rig({
+      handset: false,
+      mic: false,
+      streamListen(callbacks) {
+        callbacks.onFail?.("NO-API");
+        return null;
+      },
+    });
+    bare.drive.control("longPressStart");
+    expect(bare.screens.at(-1)?.ear).toEqual({ engine: "none", note: "NO-API" });
+  });
+
+  it("marks a live session as Scribe, surfaces a mid-hold fault, and routes the mic level", async () => {
+    const held: { callbacks: StreamCallbacks | null } = { callbacks: null };
+    const { drive, screens } = rig({
+      streamListen(next) {
+        held.callbacks = next;
+        return Promise.resolve({ stop: () => Promise.resolve("bay"), cancel() {} });
+      },
+    });
+    drive.control("longPressStart");
+    held.callbacks?.onLevel?.(0.6);
+    expect(screens.at(-1)?.level).toBe(0.625);
+    await vi.waitFor(() => expect(screens.at(-1)?.ear).toEqual({ engine: "scribe", note: null }));
+    held.callbacks?.onFail?.("SRV-QUOTA_EXCEEDED");
+    expect(screens.at(-1)?.ear).toEqual({ engine: "scribe", note: "SRV-QUOTA_EXCEEDED" });
+    drive.control("longPressEnd");
+    held.callbacks?.onLevel?.(0.9);
+    expect(screens.at(-1)?.level).toBe(0);
   });
 });

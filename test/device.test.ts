@@ -185,3 +185,33 @@ describe("reduceDevice", () => {
     expect(exit.effects).toEqual([{ type: "closeWebView" }]);
   });
 });
+
+
+describe("ear report and mic level", () => {
+  it("starts on standby and records which engine heard the hold", () => {
+    expect(initialDevice().ear).toEqual({ engine: "standby", note: null });
+    expect(initialDevice().level).toBe(0);
+    const scribe = reduceDevice(initialDevice(), { type: "ear", engine: "scribe", note: null });
+    expect(scribe.state.ear).toEqual({ engine: "scribe", note: null });
+    expect(scribe.effects).toEqual([]);
+    const failed = reduceDevice(scribe.state, { type: "ear", engine: "r1", note: "AUTH" });
+    expect(failed.state.ear).toEqual({ engine: "r1", note: "AUTH" });
+    const again = reduceDevice(failed.state, { type: "ear", engine: "r1", note: "AUTH" });
+    expect(again.state).toBe(failed.state);
+  });
+
+  it("quantizes the level while armed and drops it on release", () => {
+    const idle = reduceDevice(initialDevice(), { type: "level", level: 0.9 });
+    expect(idle.state.level).toBe(0);
+    const armed = reduceDevice(initialDevice(), { type: "longPressStart" }).state;
+    const loud = reduceDevice(armed, { type: "level", level: 0.51 });
+    expect(loud.state.level).toBe(0.5);
+    expect(reduceDevice(loud.state, { type: "level", level: 0.53 }).state).toBe(loud.state);
+    expect(reduceDevice(loud.state, { type: "level", level: 7 }).state.level).toBe(1);
+    expect(reduceDevice(loud.state, { type: "level", level: -3 }).state.level).toBe(0);
+    expect(reduceDevice(loud.state, { type: "level", level: Number.NaN }).state.level).toBe(0);
+    const released = reduceDevice(loud.state, { type: "longPressEnd" }).state;
+    expect(released.level).toBe(0);
+    expect(reduceDevice(released, { type: "level", level: 0.9 }).state.level).toBe(0);
+  });
+});
