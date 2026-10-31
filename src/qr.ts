@@ -10,7 +10,7 @@ export const WSS_PORT = 443 as const;
 export const LAN_PORT = 18789 as const;
 
 const CREATION_TITLE = "Stark R1" as const;
-export const CREATION_URL_VERSION = "20261031-pair" as const;
+export const CREATION_URL_VERSION = "20261031-tts" as const;
 const CREATION_DESCRIPTION = "F.R.I.D.A.Y. & Grok Bot Communicator for Rabbit R1" as const;
 const QR_BYTE_LIMIT = 2900;
 
