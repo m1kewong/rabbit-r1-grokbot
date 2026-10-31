@@ -1,6 +1,6 @@
 import { afterEach, describe, expect, it, vi } from "vitest";
 import { startDrive, type StreamCallbacks } from "../src/drive";
-import type { DeviceState, SpeakPayload } from "../src/device";
+import { buildSpeakPayload, type DeviceState, type SpeakPayload } from "../src/device";
 
 afterEach(() => {
   vi.unstubAllGlobals();
@@ -61,17 +61,14 @@ describe("startDrive", () => {
       expect(calls.map((call) => call.message)).toEqual(["Brief me on what matters today."]),
     );
     await vi.waitFor(() =>
-      expect(spoken).toEqual([{ message: "First", useLLM: true, wantsR1Response: true, wantsJournalEntry: false }]),
+      expect(spoken).toEqual([buildSpeakPayload("First")]),
     );
 
     drive.control("longPressStart");
     drive.control("longPressEnd");
     await vi.waitFor(() => expect(calls.map((call) => call.message)).toContain("lights"));
     await vi.waitFor(() =>
-      expect(spoken).toEqual([
-        { message: "First", useLLM: true, wantsR1Response: true, wantsJournalEntry: false },
-        { message: "Second", useLLM: true, wantsR1Response: true, wantsJournalEntry: false },
-      ]),
+      expect(spoken).toEqual([buildSpeakPayload("First"), buildSpeakPayload("Second")]),
     );
     drive.wheel(12);
     expect(screens.at(-1)?.personaId).toBe("jarvis");
