@@ -56,7 +56,7 @@ const chrome: ChromeFields = {
 
 let qrCache: { key: string; creation: string; openclaw: string } | null = null;
 let healthStarted = false;
-let wired = false;
+const wiredRoots = new WeakSet<HTMLElement>();
 
 export function chromeMode(input: {
   readonly path: string;
@@ -423,8 +423,8 @@ function applyLive(scope: ParentNode, state: DeviceState, persona: Persona): voi
 }
 
 function wire(root: HTMLElement, target: Window, dispatch: (event: DeviceEvent) => void): void {
-  if (wired) return;
-  wired = true;
+  if (wiredRoots.has(root)) return;
+  wiredRoots.add(root);
   let pressTimer: number | null = null;
   let armed = false;
   let kind: "neuron" | "ptt" | null = null;
@@ -714,11 +714,33 @@ function saveChrome(target: Window): void {
   }
 }
 
-export function boot(root: HTMLElement, target: Window): void {
+async function pairInstallToken(target: Window): Promise<void> {
+  const url = new URL(target.location.href);
+  if (!url.searchParams.has("t")) return;
+  const token = (url.searchParams.get("t") ?? "").trim();
+  if (token !== "") {
+    const shelf = browserTokens(target);
+    if ((await shelf.load()) !== token) await shelf.save(token);
+    if ((await shelf.load()) !== token) return;
+    chrome.gatewayToken = token;
+    try {
+      if (target.localStorage.getItem(GATEWAY_TOKEN_KEY) !== token) {
+        target.localStorage.setItem(GATEWAY_TOKEN_KEY, token);
+      }
+    } catch (error) {
+      if (!(error instanceof DOMException)) throw error;
+    }
+  }
+  url.searchParams.delete("t");
+  target.history.replaceState(target.history.state, "", `${url.pathname}${url.search}${url.hash}`);
+}
+
+export async function boot(root: HTMLElement, target: Window): Promise<void> {
   loadChrome(target);
+  await pairInstallToken(target);
   const drive = startDrive({
     now: () => Date.now(),
-    loadToken: () => browserTokens(target).load(),
+    loadToken: () => Promise.resolve(null),
     capture: () => captureSpeech(target),
     streamListen: createScribeListen({
       target,

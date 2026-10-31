@@ -10,20 +10,24 @@ Install dependencies, then run the tests and the production build.
 npm install
 npm test
 npm run build
-ALLOW_ANY_TOKEN=true npm run serve
+GATEWAY_TOKEN=local-dev npm run serve
 ```
 
 Open `http://127.0.0.1:18789/` for the handset. Open `http://127.0.0.1:18789/qr` for both QR codes. `?r1=1` hides the desktop bezel.
 
+`ALLOW_ANY_TOKEN=true npm run serve` is a temporary debug switch for a handset with no paired token. Anyone who can reach the worker can spend the ElevenLabs quota.
+
 ## Generate the QR images
 
 ```bash
-npm run generate:qr
+GATEWAY_TOKEN=your-token npm run generate:qr
 ```
 
 The command writes `artifacts/r1-creation-qr.png`, `artifacts/r1-openclaw-wss-qr.png`, and `artifacts/r1-dual-qr-card.png`.
 
-Set `GATEWAY_TOKEN` before you serve a gateway that should reject unknown tokens. Set `EVEN_G2_TOKEN` when the bridge should forward to `https://even-g2-bridge.saviormike.workers.dev`. With no bridge token, chat returns the offline F.R.I.D.A.Y. sentence.
+Scan the Creation QR on the R1. The URL carries the token as `t`. Boot stores it and removes `t`. Without `GATEWAY_TOKEN`, the Creation URL is version-only and the OpenClaw card uses `dev-token`. The on-screen Creation card at `/qr` stays version-only. The printed card is the one that carries the token.
+
+Set `GATEWAY_TOKEN` before you serve a gateway that should reject unknown tokens. Set `EVEN_G2_TOKEN` when the bridge should forward to `https://even-g2-bridge.saviormike.workers.dev`. With no bridge token, chat returns the offline F.R.I.D.A.Y. sentence. Chat still uses `EVEN_G2_TOKEN` on the worker. The handset does not send the paired token on `/api/chat`.
 
 ## Cloudflare secrets
 
@@ -35,7 +39,7 @@ wrangler secret put ELEVENLABS_API_KEY
 
 `ELEVENLABS_API_KEY` is what makes Cantonese work. Without it every hold falls back to the R1's own recognizer, which has no Cantonese.
 
-The worker refuses to start without `GATEWAY_TOKEN` unless `ALLOW_ANY_TOKEN=true`. `/api/stt/token` accepts only the gateway token or the bridge token, and nothing in this package puts either one on the handset. With `GATEWAY_TOKEN` set and `ALLOW_ANY_TOKEN` unset, the R1 therefore gets `AUTH` below. Set `ALLOW_ANY_TOKEN=true` to let the R1 mint tickets, knowing anyone who finds the worker URL can spend the ElevenLabs quota.
+The worker refuses to start without `GATEWAY_TOKEN` unless `ALLOW_ANY_TOKEN=true`. `ALLOW_ANY_TOKEN=true` is a temporary local debug switch for a handset that has no paired token. Anyone who can reach the worker can spend the ElevenLabs quota.
 
 ## Which recognizer heard me
 
@@ -52,7 +56,7 @@ The small line under the name says who took the last hold.
 
 | Code | Cause |
 | --- | --- |
-| `AUTH` | `/api/stt/token` answered 401. The handset has no accepted token. |
+| `AUTH` | `/api/stt/token` answered 401. The handset has no paired gateway token. |
 | `NO-KEY` | `/api/stt/token` answered 503. `ELEVENLABS_API_KEY` is not set on the worker. |
 | `UPSTREAM` | 502. ElevenLabs refused the key. |
 | `BAD-BODY` | The worker answered with something that is not a ticket. It is probably an older build without `/api/stt/token`. |

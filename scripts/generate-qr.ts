@@ -1,5 +1,6 @@
 import { mkdir, writeFile } from "node:fs/promises";
 import { join } from "node:path";
+import { pathToFileURL } from "node:url";
 import { PNG } from "pngjs";
 import type { GatewayBindings } from "../src/gateway";
 import { creationQr, openClawWss, renderPng } from "../src/qr";
@@ -109,11 +110,20 @@ function renderDualCard(left: Uint8Array, right: Uint8Array): Uint8Array {
   return Uint8Array.from(PNG.sync.write(card));
 }
 
+export function qrCardTokens(gatewayToken: string | undefined): {
+  readonly creation: string | undefined;
+  readonly openClaw: string;
+} {
+  const trimmed = gatewayToken?.trim() ?? "";
+  if (trimmed === "") return { creation: undefined, openClaw: "dev-token" };
+  return { creation: trimmed, openClaw: trimmed };
+}
+
 export async function generateQrMain(argv: readonly string[], env: GatewayBindings): Promise<void> {
   const origin = argv[2]?.startsWith("http") ? argv[2] : "https://stark-r1.local";
-  const token = env.GATEWAY_TOKEN?.trim() || "dev-token";
-  const created = creationQr(origin);
-  const wss = openClawWss(new URL(origin).hostname, token);
+  const cards = qrCardTokens(env.GATEWAY_TOKEN);
+  const created = creationQr(origin, cards.creation);
+  const wss = openClawWss(new URL(origin).hostname, cards.openClaw);
   if (!created.ok) throw new Error(created.reason);
   if (!wss.ok) throw new Error(wss.reason);
   const creationPng = await renderPng(created.text);
@@ -131,4 +141,7 @@ export async function generateQrMain(argv: readonly string[], env: GatewayBindin
   }
 }
 
-await generateQrMain(process.argv, { GATEWAY_TOKEN: process.env.GATEWAY_TOKEN });
+const scriptPath = process.argv[1];
+if (scriptPath !== undefined && import.meta.url === pathToFileURL(scriptPath).href) {
+  await generateQrMain(process.argv, { GATEWAY_TOKEN: process.env.GATEWAY_TOKEN });
+}
