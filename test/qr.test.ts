@@ -17,7 +17,7 @@ const PAIR_TOKEN = "paired/token+for stark-r1 gateway secret!!123456";
 
 const CREATION = {
   title: "Stark R1",
-  url: "https://r1.example/?v=20261031-tts",
+  url: "https://r1.example/?v=20261031-tts15",
   description: "F.R.I.D.A.Y. & Grok Bot Communicator for Rabbit R1",
   iconUrl: "https://r1.example/icon.png",
   themeColor: FRAME_COLOR,
@@ -41,7 +41,7 @@ describe("creation QR", () => {
     if (!built.ok) return;
     const url = new URL(built.value.url);
     expect(`${url.origin}${url.pathname}`).toBe("https://r1.example/");
-    expect(url.search).toBe("?v=20261031-tts");
+    expect(url.search).toBe("?v=20261031-tts15");
     expect(built.value.iconUrl).toBe("https://r1.example/icon.png");
     expect(validateCreation(built.text)).toEqual({ ok: true });
   });
@@ -75,7 +75,7 @@ describe("creation QR", () => {
         "title",
         "url",
       ]);
-      expect(new URL(built.value.url).search).toBe("?v=20261031-tts");
+      expect(new URL(built.value.url).search).toBe("?v=20261031-tts15");
       expect(validateCreation(built.text)).toEqual({ ok: true });
     }
   });
@@ -85,7 +85,7 @@ describe("creation QR", () => {
     const built = creationQr("https://r1.example", PAIR_TOKEN);
     expect(built.ok).toBe(true);
     if (!built.ok) return;
-    expect(built.value.url).toBe(`https://r1.example/?v=20261031-tts&t=${encodeURIComponent(PAIR_TOKEN)}`);
+    expect(built.value.url).toBe(`https://r1.example/?v=20261031-tts15&t=${encodeURIComponent(PAIR_TOKEN)}`);
     expect(validateCreation(built.text)).toEqual({ ok: true });
     expect(new TextEncoder().encode(built.text).byteLength).toBeLessThan(2900);
   });
@@ -103,31 +103,31 @@ describe("creation QR", () => {
 
   it("rejects an install url that is not the version and optional token", () => {
     const payload = (url: string): string => JSON.stringify({ ...CREATION, url });
-    expect(validateCreation(payload("https://r1.example/?v=20261031-tts&t="))).toEqual({
+    expect(validateCreation(payload("https://r1.example/?v=20261031-tts15&t="))).toEqual({
       ok: false,
       reason: "shape",
     });
-    expect(validateCreation(payload("https://r1.example/?v=20261031-tts&t=%20"))).toEqual({
+    expect(validateCreation(payload("https://r1.example/?v=20261031-tts15&t=%20"))).toEqual({
       ok: false,
       reason: "shape",
     });
     expect(validateCreation(payload("https://r1.example/?v=20261030-hud"))).toEqual({ ok: false, reason: "shape" });
-    expect(validateCreation(payload("https://r1.example/?v=20261031-tts&extra=1"))).toEqual({
+    expect(validateCreation(payload("https://r1.example/?v=20261031-tts15&extra=1"))).toEqual({
       ok: false,
       reason: "shape",
     });
-    expect(validateCreation(payload("https://user:secret@r1.example/?v=20261031-tts"))).toEqual({
+    expect(validateCreation(payload("https://user:secret@r1.example/?v=20261031-tts15"))).toEqual({
       ok: false,
       reason: "shape",
     });
-    expect(validateCreation(payload("https://r1.example/?v=20261031-tts#x"))).toEqual({ ok: false, reason: "shape" });
-    expect(validateCreation(payload("https://r1.example/app?v=20261031-tts"))).toEqual({ ok: false, reason: "shape" });
-    expect(validateCreation(payload("https://r1.example/?v=20261031-tts&v=20261031-tts"))).toEqual({
+    expect(validateCreation(payload("https://r1.example/?v=20261031-tts15#x"))).toEqual({ ok: false, reason: "shape" });
+    expect(validateCreation(payload("https://r1.example/app?v=20261031-tts15"))).toEqual({ ok: false, reason: "shape" });
+    expect(validateCreation(payload("https://r1.example/?v=20261031-tts15&v=20261031-tts15"))).toEqual({
       ok: false,
       reason: "shape",
     });
     expect(validateCreation(payload("not a url"))).toEqual({ ok: false, reason: "shape" });
-    expect(validateCreation(payload("https://r1.example/?t=ok&v=20261031-tts"))).toEqual({ ok: true });
+    expect(validateCreation(payload("https://r1.example/?t=ok&v=20261031-tts15"))).toEqual({ ok: true });
   });
 });
 
