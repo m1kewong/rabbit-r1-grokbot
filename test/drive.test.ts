@@ -1,6 +1,6 @@
 import { afterEach, describe, expect, it, vi } from "vitest";
 import { startDrive, type StreamCallbacks } from "../src/drive";
-import { buildSpeakPayload, type DeviceState, type SpeakPayload } from "../src/device";
+import { buildSpeakPayload, type DeviceState, type SpokenReply } from "../src/device";
 
 afterEach(() => {
   vi.unstubAllGlobals();
@@ -10,7 +10,7 @@ describe("startDrive", () => {
   it("waits 250ms, cycles presets instead of sending, then speaks a reply in send order", async () => {
     const timers: { delayMs: number; fire: () => void; cancelled: boolean }[] = [];
     const calls: { message: string }[] = [];
-    const spoken: SpeakPayload[] = [];
+    const spoken: SpokenReply[] = [];
     const screens: DeviceState[] = [];
     let now = 5_000;
     vi.stubGlobal("fetch", async (_url: string, init?: RequestInit) => {
@@ -29,8 +29,8 @@ describe("startDrive", () => {
       now: () => now,
       loadToken: () => Promise.resolve(null),
       capture: () => Promise.resolve("lights"),
-      speak(payload) {
-        spoken.push(payload);
+      speak(reply) {
+        spoken.push(reply);
       },
       exit() {},
       schedule(delayMs, fire) {
@@ -61,20 +61,67 @@ describe("startDrive", () => {
       expect(calls.map((call) => call.message)).toEqual(["Brief me on what matters today."]),
     );
     await vi.waitFor(() =>
-      expect(spoken).toEqual([buildSpeakPayload("First")]),
+      expect(spoken).toEqual([{ payload: buildSpeakPayload("First"), text: "First" }]),
     );
 
     drive.control("longPressStart");
     drive.control("longPressEnd");
     await vi.waitFor(() => expect(calls.map((call) => call.message)).toContain("lights"));
     await vi.waitFor(() =>
-      expect(spoken).toEqual([buildSpeakPayload("First"), buildSpeakPayload("Second")]),
+      expect(spoken).toEqual([
+        { payload: buildSpeakPayload("First"), text: "First" },
+        { payload: buildSpeakPayload("Second"), text: "Second" },
+      ]),
     );
     drive.wheel(12);
     expect(screens.at(-1)?.personaId).toBe("jarvis");
     drive.wheel(-3);
     expect(screens.at(-1)?.personaId).toBe("friday");
     drive.control("exit");
+  });
+
+  it("stores a speak fault reported by the speaker", async () => {
+    const screens: DeviceState[] = [];
+    const timers: { fire: () => void }[] = [];
+    vi.stubGlobal(
+      "fetch",
+      async () =>
+        new Response(
+          JSON.stringify({
+            ok: true,
+            reply: "Ready",
+            model: "local-friday",
+            personaId: "friday",
+            routedToGrokBot: false,
+          }),
+        ),
+    );
+    const drive = startDrive({
+      now: () => 0,
+      loadToken: () => Promise.resolve(null),
+      capture: () => Promise.resolve(null),
+      speak(reply, report) {
+        expect(reply).toEqual({ payload: buildSpeakPayload("Ready"), text: "Ready" });
+        report("no-tts");
+      },
+      exit() {},
+      schedule(_delayMs, fire) {
+        timers.push({ fire });
+        return () => {};
+      },
+      render(state) {
+        screens.push(state);
+      },
+    });
+    drive.control("toggleSpeaker");
+    drive.control("sideClick");
+    timers.at(-1)?.fire();
+    await vi.waitFor(() => expect(screens.at(-1)?.speakFault).toBe("no-tts"));
+    expect(screens.at(-1)?.turn).toEqual({
+      tag: "done",
+      text: "Give me a status report.",
+      reply: "Ready",
+    });
   });
 
   it("does not post a hold that returns no speech", async () => {
