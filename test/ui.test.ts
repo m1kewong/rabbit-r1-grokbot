@@ -1,10 +1,10 @@
 // @vitest-environment happy-dom
 
-import { beforeEach, describe, expect, it } from "vitest";
-import { initialDevice, reduceDevice, type DeviceState } from "../src/device";
+import { afterEach, beforeEach, describe, expect, it } from "vitest";
+import { buildSpeakPayload, initialDevice, reduceDevice, type DeviceState } from "../src/device";
 import { startDrive } from "../src/drive";
 import { CREATION_URL_VERSION } from "../src/qr";
-import { asrView, boot, browserTokens, chromeMode, paint } from "../src/ui";
+import { asrView, boot, browserTokens, chromeMode, paint, postSpeech } from "../src/ui";
 
 describe("chromeMode", () => {
   it("keeps the cockpit on /qr even when the viewport is narrow", () => {
@@ -303,5 +303,66 @@ describe("paired install", () => {
     } finally {
       globalThis.fetch = previous;
     }
+  });
+});
+
+describe("voice lines in the reply panel", () => {
+  function replied(overrides: Partial<DeviceState>): string {
+    window.history.replaceState(null, "", "/?r1=1");
+    Object.defineProperty(window, "innerWidth", { configurable: true, value: 240 });
+    const root = document.createElement("div");
+    document.body.replaceChildren(root);
+    const state: DeviceState = {
+      ...initialDevice(),
+      turn: { tag: "done", text: "hi", reply: "Hello" },
+      transcript: [
+        { role: "user", content: "hi" },
+        { role: "assistant", content: "Hello" },
+      ],
+      ...overrides,
+    };
+    paint(root, window, state, () => {});
+    return root.querySelector("[data-bind=log]")?.textContent ?? "";
+  }
+
+  it("tells the user to turn the speaker on, then what the R1 did", () => {
+    expect(replied({})).toContain("Voice off. Tap SPK.");
+    expect(replied({ speakerOn: true })).not.toContain("Voice");
+    expect(replied({ speakerOn: true, voice: { state: "sent", note: null } })).toContain("VoiceSent to R1");
+    expect(replied({ speakerOn: true, voice: { state: "no-bridge", note: null } })).toContain("No R1 bridge");
+    expect(replied({ speakerOn: true, voice: { state: "error", note: null } })).toContain("R1 refused");
+    expect(replied({ speakerOn: true, voice: { state: "echo", note: "<b>Sure</b>" } })).toContain("R1 said<b>Sure</b>");
+  });
+
+  it("does not show a voice line before a reply has landed", () => {
+    expect(replied({ turn: { tag: "pending", text: "hi" } })).not.toContain("Voice");
+  });
+});
+
+describe("postSpeech", () => {
+  const payload = buildSpeakPayload("hi");
+  const view = window as unknown as Record<string, unknown>;
+
+  afterEach(() => {
+    Reflect.deleteProperty(view, "PluginMessageHandler");
+  });
+
+  it("posts the read-aloud payload to the R1 bridge", () => {
+    const posted: string[] = [];
+    view.PluginMessageHandler = { postMessage: (message: string) => posted.push(message) };
+    expect(postSpeech(payload)).toBe("sent");
+    expect(JSON.parse(posted[0] ?? "{}")).toEqual(payload);
+    expect(JSON.parse(posted[0] ?? "{}").message).toContain("hi");
+  });
+
+  it("reports a bridge that throws and a page with no bridge at all", () => {
+    view.PluginMessageHandler = {
+      postMessage() {
+        throw new Error("refused");
+      },
+    };
+    expect(postSpeech(payload)).toBe("error");
+    Reflect.deleteProperty(view, "PluginMessageHandler");
+    expect(postSpeech(payload)).toBe("no-bridge");
   });
 });

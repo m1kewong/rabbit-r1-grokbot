@@ -21,11 +21,13 @@ export type StreamCallbacks = {
 
 export type StreamListen = (callbacks: StreamCallbacks) => StreamSession | null | Promise<StreamSession | null>;
 
+export type SpeakStatus = "sent" | "no-bridge" | "error";
+
 export type DrivePorts = {
   now(): number;
   loadToken(): Promise<string | null>;
   capture(): Promise<string | null>;
-  speak(payload: SpeakPayload): void;
+  speak(payload: SpeakPayload): SpeakStatus | void;
   exit(): void;
   schedule(delayMs: number, fire: () => void): () => void;
   render(state: DeviceState, dispatch: (event: DeviceEvent) => void): void;
@@ -71,6 +73,7 @@ export function startDrive(ports: DrivePorts): {
   let pumping = false;
   let cancelTimer: (() => void) | null = null;
   let generation = 0;
+  let awaitingEcho = false;
   let listen: ListenSession | null = null;
   const slots: ReplySlot[] = [];
 
@@ -139,9 +142,14 @@ export function startDrive(ports: DrivePorts): {
       case "ptt-stop":
         endListen();
         break;
-      case "speak":
-        ports.speak(effect.payload);
+      case "speak": {
+        const status = ports.speak(effect.payload);
+        if (status) {
+          awaitingEcho = status === "sent";
+          dispatch({ type: "voice", state: status, note: null });
+        }
         break;
+      }
       case "closeWebView":
         ports.exit();
         break;
@@ -326,7 +334,14 @@ export function startDrive(ports: DrivePorts): {
   if (ports.pluginTarget) {
     ports.pluginTarget.onPluginMessage = (data: unknown) => {
       const transcript = readSttEnded(data);
-      if (transcript === undefined) return;
+      if (transcript === undefined) {
+        const echo = awaitingEcho ? readEcho(data) : null;
+        if (echo !== null) {
+          awaitingEcho = false;
+          dispatch({ type: "voice", state: "echo", note: echo });
+        }
+        return;
+      }
       const session = listen;
       if (!session || session.ear.tag !== "native") return;
       session.ear.transcript = transcript;
@@ -386,6 +401,15 @@ function readSttEnded(data: unknown): string | undefined {
   const record = pluginRecord(data);
   if (!record || record.type !== "sttEnded") return undefined;
   return typeof record.transcript === "string" ? record.transcript : "";
+}
+
+function readEcho(data: unknown): string | null {
+  const record = pluginRecord(data);
+  if (!record) return null;
+  const raw = typeof record.message === "string" ? record.message : typeof record.data === "string" ? record.data : null;
+  if (raw === null) return null;
+  const flat = raw.replace(/\s+/g, " ").trim();
+  return flat === "" ? null : flat.slice(0, 80);
 }
 
 function pluginRecord(data: unknown): Record<string, unknown> | null {

@@ -215,3 +215,20 @@ describe("ear report and mic level", () => {
     expect(reduceDevice(released, { type: "level", level: 0.9 }).state.level).toBe(0);
   });
 });
+
+
+describe("voice report", () => {
+  it("records what happened to the spoken reply and clears on the next submit", () => {
+    expect(initialDevice().voice).toEqual({ state: "none", note: null });
+    const sent = reduceDevice(initialDevice(), { type: "voice", state: "sent", note: null });
+    expect(sent.state.voice).toEqual({ state: "sent", note: null });
+    expect(sent.effects).toEqual([]);
+    expect(reduceDevice(sent.state, { type: "voice", state: "sent", note: null }).state).toBe(sent.state);
+    const echo = reduceDevice(sent.state, { type: "voice", state: "echo", note: "Sure." });
+    expect(echo.state.voice).toEqual({ state: "echo", note: "Sure." });
+    const next = reduceDevice(echo.state, { type: "composer", text: "again" }).state;
+    const submitted = reduceDevice({ ...next, gesture: { tag: "drafting" } }, { type: "sendDraft" });
+    expect(submitted.effects.some((effect) => effect.type === "submit")).toBe(true);
+    expect(submitted.state.voice).toEqual({ state: "none", note: null });
+  });
+});

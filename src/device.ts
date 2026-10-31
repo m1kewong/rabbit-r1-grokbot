@@ -31,6 +31,13 @@ export type EarReport = {
   readonly note: string | null;
 };
 
+export type VoiceState = "none" | "sent" | "no-bridge" | "error" | "echo";
+
+export type VoiceReport = {
+  readonly state: VoiceState;
+  readonly note: string | null;
+};
+
 export type DeviceState = {
   readonly personaId: PersonaId;
   readonly composer: string;
@@ -41,6 +48,7 @@ export type DeviceState = {
   readonly turn: Turn;
   readonly transcript: readonly ChatTurn[];
   readonly ear: EarReport;
+  readonly voice: VoiceReport;
   readonly level: number;
 };
 
@@ -54,6 +62,7 @@ export type DeviceEvent =
   | { readonly type: "partial"; readonly text: string }
   | { readonly type: "level"; readonly level: number }
   | { readonly type: "ear"; readonly engine: Engine; readonly note: string | null }
+  | { readonly type: "voice"; readonly state: VoiceState; readonly note: string | null }
   | { readonly type: "utterance"; readonly heard: string | null; readonly ear?: "r1" | "absent" }
   | { readonly type: "toggleDraft" }
   | { readonly type: "sendDraft" }
@@ -119,6 +128,7 @@ export function initialDevice(): DeviceState {
     turn: { tag: "idle" },
     transcript: [],
     ear: { engine: "standby", note: null },
+    voice: { state: "none", note: null },
     level: 0,
   };
 }
@@ -141,6 +151,7 @@ function submit(state: DeviceState, text: string): DeviceStep {
       gesture: { tag: "idle" },
       turn: { tag: "pending", text },
       transcript: [...state.transcript, { role: "user", content: text }],
+      voice: { state: "none", note: null },
     },
     effects: [{ type: "submit", text, personaId: state.personaId, history }],
   };
@@ -226,6 +237,11 @@ function onEar(state: DeviceState, engine: Engine, note: string | null): DeviceS
   return same({ ...state, ear: { engine, note } });
 }
 
+function onVoice(state: DeviceState, voice: VoiceState, note: string | null): DeviceStep {
+  if (state.voice.state === voice && state.voice.note === note) return same(state);
+  return same({ ...state, voice: { state: voice, note } });
+}
+
 function onUtterance(state: DeviceState, heard: string | null, ear?: "r1" | "absent"): DeviceStep {
   if (state.gesture.tag !== "awaiting-utterance") return same(state);
   if (state.turn.tag === "pending") return same({ ...state, gesture: { tag: "idle" } });
@@ -286,6 +302,8 @@ export function reduceDevice(state: DeviceState, event: DeviceEvent): DeviceStep
       return onLevel(state, event.level);
     case "ear":
       return onEar(state, event.engine, event.note);
+    case "voice":
+      return onVoice(state, event.state, event.note);
     case "toggleDraft":
       return onToggleDraft(state);
     case "sendDraft":

@@ -1,7 +1,7 @@
 import "./styles.css";
 import { getHealth } from "./client";
 import { PERSONAS, personaById, presetById, type HealthStatus, type Persona } from "./domain";
-import { startDrive } from "./drive";
+import { startDrive, type SpeakStatus } from "./drive";
 import { type DeviceEvent, type DeviceState, type EarReport, type SpeakPayload } from "./device";
 import { createScribeListen } from "./scribe";
 import { CREATION_URL_VERSION, creationQr, openClawForLocation, renderDataUrl } from "./qr";
@@ -143,6 +143,27 @@ export function asrView(ear: EarReport): AsrView {
   }
 }
 
+function voiceMarkup(state: DeviceState): string {
+  if (state.turn.tag !== "done") return "";
+  const voice = state.voice;
+  switch (voice.state) {
+    case "none":
+      return state.speakerOn ? "" : `<p class="hint">Voice off. Tap SPK.</p>`;
+    case "sent":
+      return `<p class="line pending"><span>Voice</span>Sent to R1</p>`;
+    case "no-bridge":
+      return `<p class="line failed"><span>Voice</span>No R1 bridge</p>`;
+    case "error":
+      return `<p class="line failed"><span>Voice</span>R1 refused</p>`;
+    case "echo":
+      return `<p class="line pending"><span>R1 said</span>${escapeHtml(voice.note ?? "")}</p>`;
+    default: {
+      const unreachable: never = voice.state;
+      return unreachable;
+    }
+  }
+}
+
 function statusMarkup(state: DeviceState): string {
   const caption = armedCaption(state);
   if (caption !== "") {
@@ -155,7 +176,7 @@ function statusMarkup(state: DeviceState): string {
     const note = state.turn.ear === "r1" ? `<p class="hint">Chinese Traditional in R1 Settings</p>` : "";
     return `<p class="line failed"><span>Mic</span>No speech</p>${note}`;
   }
-  return "";
+  return voiceMarkup(state);
 }
 
 function logMarkup(state: DeviceState, persona: Persona): string {
@@ -636,8 +657,18 @@ export function browserTokens(target: Window = window): {
   };
 }
 
-export function postSpeech(payload: SpeakPayload): void {
-  (window as R1Window).PluginMessageHandler?.postMessage(JSON.stringify(payload));
+export function postSpeech(payload: SpeakPayload): SpeakStatus {
+  const view = window as R1Window;
+  const bridge = view.PluginMessageHandler;
+  if (bridge) {
+    try {
+      bridge.postMessage(JSON.stringify(payload));
+      return "sent";
+    } catch {
+      return "error";
+    }
+  }
+  return "no-bridge";
 }
 
 export function exitWebView(): void {

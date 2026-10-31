@@ -604,3 +604,66 @@ describe("ear report", () => {
     expect(screens.at(-1)?.level).toBe(0);
   });
 });
+
+
+describe("voice report", () => {
+  async function speakOnce(status: "sent" | "no-bridge" | "error" | undefined): Promise<{
+    screens: DeviceState[];
+    plugin: { onPluginMessage?: (data: unknown) => void };
+  }> {
+    vi.stubGlobal("fetch", async () =>
+      new Response(
+        JSON.stringify({ ok: true, reply: "Hello", model: "local-friday", personaId: "friday", routedToGrokBot: false }),
+      ),
+    );
+    const screens: DeviceState[] = [];
+    const plugin: { onPluginMessage?: (data: unknown) => void } = {};
+    const drive = startDrive({
+      now: () => 0,
+      loadToken: () => Promise.resolve(null),
+      capture: () => Promise.resolve("lights"),
+      speak: () => status,
+      exit() {},
+      schedule: () => () => {},
+      render(state) {
+        screens.push(state);
+      },
+      pluginTarget: plugin,
+    });
+    drive.control("toggleSpeaker");
+    drive.control("longPressStart");
+    drive.control("longPressEnd");
+    await vi.waitFor(() => expect(screens.at(-1)?.turn.tag).toBe("done"));
+    return { screens, plugin };
+  }
+
+  it("reports the status of the speak port", async () => {
+    for (const status of ["sent", "no-bridge", "error"] as const) {
+      const { screens } = await speakOnce(status);
+      expect(screens.at(-1)?.voice).toEqual({ state: status, note: null });
+    }
+    const silent = await speakOnce(undefined);
+    expect(silent.screens.at(-1)?.voice).toEqual({ state: "none", note: null });
+  });
+
+  it("captures what the R1 answers once, and only after a send", async () => {
+    const sent = await speakOnce("sent");
+    sent.plugin.onPluginMessage?.({ type: "llm", message: "  Sure,\n here you go.  " });
+    expect(sent.screens.at(-1)?.voice).toEqual({ state: "echo", note: "Sure, here you go." });
+    sent.plugin.onPluginMessage?.({ data: "second answer" });
+    expect(sent.screens.at(-1)?.voice.note).toBe("Sure, here you go.");
+
+    const jsonString = await speakOnce("sent");
+    jsonString.plugin.onPluginMessage?.(JSON.stringify({ data: "from data" }));
+    expect(jsonString.screens.at(-1)?.voice).toEqual({ state: "echo", note: "from data" });
+
+    const missing = await speakOnce("no-bridge");
+    missing.plugin.onPluginMessage?.({ message: "unrelated" });
+    expect(missing.screens.at(-1)?.voice).toEqual({ state: "no-bridge", note: null });
+
+    const empty = await speakOnce("sent");
+    empty.plugin.onPluginMessage?.({ message: "   " });
+    empty.plugin.onPluginMessage?.({ type: "other" });
+    expect(empty.screens.at(-1)?.voice).toEqual({ state: "sent", note: null });
+  });
+});
