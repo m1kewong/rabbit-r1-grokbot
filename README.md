@@ -35,7 +35,15 @@ wrangler secret put ELEVENLABS_API_KEY
 
 `ELEVENLABS_API_KEY` is what makes Cantonese work. Without it every hold falls back to the R1's own recognizer, which has no Cantonese.
 
-The worker refuses to start without `GATEWAY_TOKEN` unless `ALLOW_ANY_TOKEN=true`. `/api/stt/token` accepts only the gateway token or the bridge token, and nothing in this package puts either one on the handset. With `GATEWAY_TOKEN` set and `ALLOW_ANY_TOKEN` unset, the R1 therefore gets `AUTH` below. Set `ALLOW_ANY_TOKEN=true` to let the R1 mint tickets, knowing anyone who finds the worker URL can spend the ElevenLabs quota.
+The worker refuses to start without `GATEWAY_TOKEN` unless `ALLOW_ANY_TOKEN=true`. `/api/stt/token` accepts only the gateway token or the bridge token, and nothing in this package puts either one on the handset. With `GATEWAY_TOKEN` set and `ALLOW_ANY_TOKEN` unset, the R1 therefore gets `AUTH` below. To let the R1 mint tickets, set `ALLOW_ANONYMOUS_STT=true`. It opens `/api/stt/token` and nothing else, so `/openclaw/ws` still needs the gateway token. Set it as a secret so a later `wrangler deploy` cannot reset it.
+
+```bash
+wrangler secret put ALLOW_ANONYMOUS_STT
+```
+
+Anyone who finds the worker URL can then spend the ElevenLabs quota. Add a Cloudflare rate limiting rule on `/api/stt/token`. A hold costs one ticket. `ALLOW_ANY_TOKEN=true` also unlocks the STT route but additionally opens the OpenClaw socket to any token, so prefer the narrow flag.
+
+The check for the token runs before the check for the key. After `AUTH` clears you may see `NO-KEY` next.
 
 ## Which recognizer heard me
 

@@ -46,6 +46,21 @@ describe("parseEnv", () => {
     if (!keyed.ok) return;
     expect(keyed.config.elevenLabsApiKey).toBe("xi-key");
   });
+
+  it("turns anonymous stt on only for the string true and leaves the gateway locked", () => {
+    const open = parseEnv({ GATEWAY_TOKEN: "secret", ALLOW_ANONYMOUS_STT: "true" });
+    expect(open.ok).toBe(true);
+    if (!open.ok) return;
+    expect(open.config.anonymousStt).toBe(true);
+    expect(open.config.allowAnyToken).toBe(false);
+    for (const value of [undefined, "", "TRUE", "1", "yes"]) {
+      const closed = parseEnv({ GATEWAY_TOKEN: "secret", ALLOW_ANONYMOUS_STT: value });
+      expect(closed.ok).toBe(true);
+      if (!closed.ok) return;
+      expect(closed.config.anonymousStt).toBe(false);
+    }
+    expect(parseEnv({ ALLOW_ANONYMOUS_STT: "true" })).toEqual({ ok: false, error: "missing-gateway-token" });
+  });
 });
 
 describe("POST /api/chat", () => {
@@ -465,6 +480,26 @@ describe("POST /api/stt/token", () => {
     if (chat.kind !== "respond") return;
     expect(chat.response.status).toBe(200);
     expect(readReply(chat).reply).toBe(`${OFFLINE}Hello`);
+  });
+
+  it("mints without any token only when anonymous stt is on", async () => {
+    vi.stubGlobal("fetch", async () => new Response(JSON.stringify({ token: "scribe-token" }), { status: 200 }));
+    const base = {
+      allowAnyToken: false as const,
+      gatewayToken: "gate",
+      bridgeToken: "bridge-secret",
+      bridgeUrl: BRIDGE,
+      elevenLabsApiKey: "xi-key",
+    };
+    const bare = { method: "POST", path: "/api/stt/token", headers: {}, body: null };
+    const locked = await startGateway(base).receive(bare);
+    expect(readReply(locked)).toEqual({ ok: false, error: "unauthorized" });
+    const open = startGateway({ ...base, anonymousStt: true });
+    expect(readReply(await open.receive(bare))).toEqual({ ok: true, token: "scribe-token" });
+    const wrong = await open.receive({ ...bare, headers: { authorization: "Bearer other" } });
+    expect(readReply(wrong)).toEqual({ ok: true, token: "scribe-token" });
+    const noKey = startGateway({ ...base, anonymousStt: true, elevenLabsApiKey: null });
+    expect(readReply(await noKey.receive(bare))).toEqual({ ok: false, error: "stt-unconfigured" });
   });
 
   it("reports a missing key and an upstream failure", async () => {

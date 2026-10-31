@@ -89,6 +89,7 @@ export type GatewayBindings = {
   readonly EVEN_G2_TOKEN?: string;
   readonly GATEWAY_TOKEN?: string;
   readonly ALLOW_ANY_TOKEN?: string;
+  readonly ALLOW_ANONYMOUS_STT?: string;
   readonly EVEN_G2_BRIDGE?: BridgeService;
   readonly ELEVENLABS_API_KEY?: string;
 };
@@ -98,6 +99,7 @@ export type GatewayConfig = {
   readonly bridgeToken: string | null;
   readonly bridgeService?: BridgeService | null;
   readonly elevenLabsApiKey?: string | null;
+  readonly anonymousStt?: boolean;
 } & (
   | { readonly allowAnyToken: true; readonly gatewayToken: string | null }
   | { readonly allowAnyToken: false; readonly gatewayToken: string }
@@ -156,6 +158,7 @@ export function parseEnv(source: GatewayBindings): ParsedEnv {
     bridgeToken: blank(source.EVEN_G2_TOKEN),
     bridgeService: source.EVEN_G2_BRIDGE ?? null,
     elevenLabsApiKey: blank(source.ELEVENLABS_API_KEY),
+    anonymousStt: source.ALLOW_ANONYMOUS_STT === "true",
   };
   if (!allowAnyToken) {
     if (gatewayToken === null) return { ok: false, error: "missing-gateway-token" };
@@ -1062,7 +1065,7 @@ function sttPresented(request: HttpRequest): string | null {
 }
 
 function sttCallerAllowed(config: ResolvedConfig, presented: string | null): boolean {
-  if (config.allowAnyToken) return true;
+  if (config.allowAnyToken || config.anonymousStt === true) return true;
   return presented !== null && (presented === config.gatewayToken || presented === config.bridgeToken);
 }
 
