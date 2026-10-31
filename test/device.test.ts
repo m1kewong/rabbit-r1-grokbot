@@ -1,6 +1,6 @@
 import { describe, expect, it } from "vitest";
 import { FRAME_COLOR, nextPreset, PERSONAS, QUICK_PRESETS, type PresetId } from "../src/domain";
-import { initialDevice, reduceDevice, type DeviceState } from "../src/device";
+import { buildSpeakPayload, initialDevice, reduceDevice, type DeviceState } from "../src/device";
 
 function arm(state: DeviceState, nowMs: number): DeviceState {
   const step = reduceDevice(state, { type: "sideClick", nowMs });
@@ -163,6 +163,16 @@ describe("reduceDevice", () => {
   });
 
   it("emits the Rabbit speech payload only when the speaker is on", () => {
+    const ready = buildSpeakPayload("Ready");
+    expect(ready.message).toBe(
+      "Read the following text aloud exactly, word for word. Do not add, omit, translate, or summarize anything.\n\n<<<\nReady\n>>>",
+    );
+    expect(ready.useLLM).toBe(true);
+    expect(ready.wantsR1Response).toBe(true);
+    expect(ready.wantsJournalEntry).toBe(false);
+    expect(buildSpeakPayload("see >>> this").message).toBe(
+      "Read the following text aloud exactly, word for word. Do not add, omit, translate, or summarize anything.\n\n<<<\nsee >>> this\n>>>",
+    );
     const pending = reduceDevice(arm(initialDevice(), 0), { type: "sideTimer", nowMs: 250 }).state;
     const quiet = reduceDevice(pending, { type: "reply", sent: pending.turn.tag === "pending" ? pending.turn.text : "", reply: "Ready" });
     expect(quiet.effects).toEqual([]);
@@ -170,17 +180,7 @@ describe("reduceDevice", () => {
     const loudState = reduceDevice(pending, { type: "toggleSpeaker" }).state;
     const sent = pending.turn.tag === "pending" ? pending.turn.text : "";
     const loud = reduceDevice(loudState, { type: "reply", sent, reply: "Ready" });
-    expect(loud.effects).toEqual([
-      {
-        type: "speak",
-        payload: {
-          message: "Ready",
-          useLLM: true,
-          wantsR1Response: true,
-          wantsJournalEntry: false,
-        },
-      },
-    ]);
+    expect(loud.effects).toEqual([{ type: "speak", payload: buildSpeakPayload("Ready") }]);
     const exit = reduceDevice(loud.state, { type: "exit" });
     expect(exit.effects).toEqual([{ type: "closeWebView" }]);
   });

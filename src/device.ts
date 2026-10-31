@@ -62,12 +62,28 @@ export type DeviceEvent =
   | { readonly type: "reply"; readonly sent: string; readonly reply: string | null }
   | { readonly type: "exit" };
 
+declare const readAloud: unique symbol;
+
+export type ReadAloudMessage = string & { readonly [readAloud]: "read-aloud" };
+
+const SPEAK_FLAGS = {
+  useLLM: true,
+  wantsR1Response: true,
+  wantsJournalEntry: false,
+} as const;
+
 export type SpeakPayload = {
-  readonly message: string;
-  readonly useLLM: true;
-  readonly wantsR1Response: true;
-  readonly wantsJournalEntry: false;
-};
+  readonly message: ReadAloudMessage;
+} & typeof SPEAK_FLAGS;
+
+export function buildSpeakPayload(reply: string): SpeakPayload {
+  const message = `Read the following text aloud exactly, word for word. Do not add, omit, translate, or summarize anything.
+
+<<<
+${reply}
+>>>` as ReadAloudMessage;
+  return { message, ...SPEAK_FLAGS };
+}
 
 export type DeviceEffect =
   | {
@@ -236,17 +252,7 @@ function onReply(state: DeviceState, sent: string, reply: string | null): Device
   if (!state.speakerOn) return same(next);
   return {
     state: next,
-    effects: [
-      {
-        type: "speak",
-        payload: {
-          message: reply,
-          useLLM: true,
-          wantsR1Response: true,
-          wantsJournalEntry: false,
-        },
-      },
-    ],
+    effects: [{ type: "speak", payload: buildSpeakPayload(reply) }],
   };
 }
 
