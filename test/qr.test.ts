@@ -11,10 +11,13 @@ import {
   validateOpenClaw,
   WSS_PORT,
 } from "../src/qr";
+import { qrCardTokens } from "../scripts/generate-qr";
+
+const PAIR_TOKEN = "paired/token+for stark-r1 gateway secret!!123456";
 
 const CREATION = {
   title: "Stark R1",
-  url: "https://r1.example/?v=20261030-hud",
+  url: "https://r1.example/?v=20261031-pair",
   description: "F.R.I.D.A.Y. & Grok Bot Communicator for Rabbit R1",
   iconUrl: "https://r1.example/icon.png",
   themeColor: FRAME_COLOR,
@@ -38,7 +41,7 @@ describe("creation QR", () => {
     if (!built.ok) return;
     const url = new URL(built.value.url);
     expect(`${url.origin}${url.pathname}`).toBe("https://r1.example/");
-    expect(url.search).toBe("?v=20261030-hud");
+    expect(url.search).toBe("?v=20261031-pair");
     expect(built.value.iconUrl).toBe("https://r1.example/icon.png");
     expect(validateCreation(built.text)).toEqual({ ok: true });
   });
@@ -59,6 +62,72 @@ describe("creation QR", () => {
     expect(validateCreation(JSON.stringify(drifted))).toEqual({ ok: false, reason: "shape" });
     const stale = { ...CREATION, url: "https://r1.example/" };
     expect(validateCreation(JSON.stringify(stale))).toEqual({ ok: false, reason: "shape" });
+  });
+
+  it("stays version-only when the token is omitted or blank", () => {
+    for (const built of [creationQr("https://r1.example"), creationQr("https://r1.example", "  ")]) {
+      expect(built.ok).toBe(true);
+      if (!built.ok) return;
+      expect(Object.keys(JSON.parse(built.text)).sort()).toEqual([
+        "description",
+        "iconUrl",
+        "themeColor",
+        "title",
+        "url",
+      ]);
+      expect(new URL(built.value.url).search).toBe("?v=20261031-pair");
+      expect(validateCreation(built.text)).toEqual({ ok: true });
+    }
+  });
+
+  it("embeds a paired gateway token in the creation url", () => {
+    expect(PAIR_TOKEN).toHaveLength(48);
+    const built = creationQr("https://r1.example", PAIR_TOKEN);
+    expect(built.ok).toBe(true);
+    if (!built.ok) return;
+    expect(built.value.url).toBe(`https://r1.example/?v=20261031-pair&t=${encodeURIComponent(PAIR_TOKEN)}`);
+    expect(validateCreation(built.text)).toEqual({ ok: true });
+    expect(new TextEncoder().encode(built.text).byteLength).toBeLessThan(2900);
+  });
+
+  it("trims one gateway token for both printed cards", () => {
+    const cards = qrCardTokens(`  ${PAIR_TOKEN}  `);
+    expect(cards).toEqual({ creation: PAIR_TOKEN, openClaw: PAIR_TOKEN });
+    expect(qrCardTokens(undefined)).toEqual({ creation: undefined, openClaw: "dev-token" });
+    expect(qrCardTokens("   ")).toEqual({ creation: undefined, openClaw: "dev-token" });
+    const built = creationQr("https://r1.example", cards.creation);
+    expect(built.ok).toBe(true);
+    if (!built.ok) return;
+    expect(built.value.url).toContain(encodeURIComponent(PAIR_TOKEN));
+  });
+
+  it("rejects an install url that is not the version and optional token", () => {
+    const payload = (url: string): string => JSON.stringify({ ...CREATION, url });
+    expect(validateCreation(payload("https://r1.example/?v=20261031-pair&t="))).toEqual({
+      ok: false,
+      reason: "shape",
+    });
+    expect(validateCreation(payload("https://r1.example/?v=20261031-pair&t=%20"))).toEqual({
+      ok: false,
+      reason: "shape",
+    });
+    expect(validateCreation(payload("https://r1.example/?v=20261030-hud"))).toEqual({ ok: false, reason: "shape" });
+    expect(validateCreation(payload("https://r1.example/?v=20261031-pair&extra=1"))).toEqual({
+      ok: false,
+      reason: "shape",
+    });
+    expect(validateCreation(payload("https://user:secret@r1.example/?v=20261031-pair"))).toEqual({
+      ok: false,
+      reason: "shape",
+    });
+    expect(validateCreation(payload("https://r1.example/?v=20261031-pair#x"))).toEqual({ ok: false, reason: "shape" });
+    expect(validateCreation(payload("https://r1.example/app?v=20261031-pair"))).toEqual({ ok: false, reason: "shape" });
+    expect(validateCreation(payload("https://r1.example/?v=20261031-pair&v=20261031-pair"))).toEqual({
+      ok: false,
+      reason: "shape",
+    });
+    expect(validateCreation(payload("not a url"))).toEqual({ ok: false, reason: "shape" });
+    expect(validateCreation(payload("https://r1.example/?t=ok&v=20261031-pair"))).toEqual({ ok: true });
   });
 });
 

@@ -1,10 +1,10 @@
 // @vitest-environment happy-dom
 
-import { describe, expect, it } from "vitest";
+import { beforeEach, describe, expect, it } from "vitest";
 import { initialDevice, reduceDevice, type DeviceState } from "../src/device";
 import { startDrive } from "../src/drive";
 import { CREATION_URL_VERSION } from "../src/qr";
-import { asrView, chromeMode, paint } from "../src/ui";
+import { asrView, boot, browserTokens, chromeMode, paint } from "../src/ui";
 
 describe("chromeMode", () => {
   it("keeps the cockpit on /qr even when the viewport is narrow", () => {
@@ -184,5 +184,124 @@ describe("handset hud", () => {
     expect(root.querySelector(".asr")).toBe(asr);
     expect(asr?.textContent).toBe("ASR > R1 NATIVE ! AUTH");
     expect(asr?.getAttribute("data-tone")).toBe("warn");
+  });
+});
+
+const PAIR_TOKEN = "paired/token+for stark-r1 gateway secret!!123456";
+
+describe("paired install", () => {
+  let secureWrites = 0;
+
+  function secureShelf(): void {
+    secureWrites = 0;
+    const store = new Map<string, string>();
+    Object.defineProperty(window, "creationStorage", {
+      configurable: true,
+      value: {
+        secure: {
+          getItem: (key: string) => store.get(key) ?? null,
+          setItem: (key: string, value: string) => {
+            secureWrites += 1;
+            store.set(key, value);
+          },
+        },
+      },
+    });
+  }
+
+  function mount(path: string): HTMLElement {
+    window.history.replaceState(null, "", path);
+    const root = document.createElement("div");
+    document.body.replaceChildren(root);
+    return root;
+  }
+
+  beforeEach(() => {
+    localStorage.clear();
+    Reflect.deleteProperty(window, "creationStorage");
+    secureWrites = 0;
+  });
+
+  it("stores the token once and strips t from the url", async () => {
+    secureShelf();
+    const root = mount(`/?v=20261031-pair&t=${encodeURIComponent(PAIR_TOKEN)}`);
+    await boot(root, window);
+    await expect(browserTokens().load()).resolves.toBe(PAIR_TOKEN);
+    expect(localStorage.getItem("stark-gateway-token")).toBe(PAIR_TOKEN);
+    expect(localStorage.getItem("stark-chat-token")).toBeNull();
+    expect(window.location.search).toBe("?v=20261031-pair");
+    expect(secureWrites).toBe(1);
+
+    window.history.replaceState(null, "", `/?v=20261031-pair&t=${encodeURIComponent(PAIR_TOKEN)}`);
+    await boot(root, window);
+    expect(secureWrites).toBe(1);
+    expect(window.location.search).toBe("?v=20261031-pair");
+  });
+
+  it("strips a blank t without writing a token", async () => {
+    secureShelf();
+    const root = mount("/?v=20261031-pair&t=%20%20");
+    await boot(root, window);
+    expect(secureWrites).toBe(0);
+    expect(localStorage.getItem("stark-gateway-token")).toBeNull();
+    expect(localStorage.getItem("stark-chat-token")).toBeNull();
+    expect(window.location.search).toBe("?v=20261031-pair");
+  });
+
+  it("sends chat with no paired token", async () => {
+    secureShelf();
+    const calls: { url: string; init?: RequestInit }[] = [];
+    const previous = globalThis.fetch;
+    globalThis.fetch = async (input: RequestInfo | URL, init?: RequestInit) => {
+      const url = typeof input === "string" ? input : input instanceof URL ? input.href : input.url;
+      calls.push({ url, init });
+      return new Response(JSON.stringify({ ok: true, reply: "ok", personaId: "friday" }), {
+        status: 200,
+        headers: { "content-type": "application/json" },
+      });
+    };
+    try {
+      const root = mount(`/?v=20261031-pair&t=${encodeURIComponent(PAIR_TOKEN)}`);
+      await boot(root, window);
+      await Promise.resolve();
+      const neuron = root.querySelector(".neuron");
+      neuron?.dispatchEvent(new PointerEvent("pointerdown", { bubbles: true }));
+      neuron?.dispatchEvent(new PointerEvent("pointerup", { bubbles: true }));
+      const input = root.querySelector("#composer");
+      expect(input).toBeInstanceOf(HTMLInputElement);
+      if (!(input instanceof HTMLInputElement)) return;
+      input.value = "hi";
+      input.dispatchEvent(new Event("input", { bubbles: true }));
+      root.querySelector("[data-send]")?.dispatchEvent(new MouseEvent("click", { bubbles: true }));
+      await Promise.resolve();
+      const chats = calls.filter((call) => new URL(call.url, window.location.origin).pathname === "/api/chat");
+      expect(chats).toHaveLength(1);
+      const chat = chats[0];
+      expect(chat).toBeDefined();
+      if (!chat) return;
+      expect(new Headers(chat.init?.headers).get("authorization")).toBeNull();
+      expect(JSON.parse(String(chat.init?.body)).token).toBeNull();
+    } finally {
+      globalThis.fetch = previous;
+    }
+  });
+
+  it("shows the paired token in the gateway field", async () => {
+    secureShelf();
+    const previous = globalThis.fetch;
+    globalThis.fetch = async () => new Response(null, { status: 503 });
+    try {
+      const root = mount(`/?v=20261031-pair&t=${encodeURIComponent(PAIR_TOKEN)}`);
+      await boot(root, window);
+      window.history.replaceState(null, "", "/qr");
+      Object.defineProperty(window, "innerWidth", { configurable: true, value: 800 });
+      paint(root, window, initialDevice(), () => {});
+      const field = root.querySelector("#gateway-token");
+      expect(field).toBeInstanceOf(HTMLInputElement);
+      if (field instanceof HTMLInputElement) expect(field.value).toBe(PAIR_TOKEN);
+      await Promise.resolve();
+    } finally {
+      globalThis.fetch = previous;
+    }
   });
 });

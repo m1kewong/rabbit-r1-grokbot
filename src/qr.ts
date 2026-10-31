@@ -10,7 +10,7 @@ export const WSS_PORT = 443 as const;
 export const LAN_PORT = 18789 as const;
 
 const CREATION_TITLE = "Stark R1" as const;
-export const CREATION_URL_VERSION = "20261030-hud" as const;
+export const CREATION_URL_VERSION = "20261031-pair" as const;
 const CREATION_DESCRIPTION = "F.R.I.D.A.Y. & Grok Bot Communicator for Rabbit R1" as const;
 const QR_BYTE_LIMIT = 2900;
 
@@ -61,11 +61,16 @@ function originBase(origin: string): string {
   return origin.replace(/\/+$/, "");
 }
 
-export function creationQr(origin: string): BuiltQr<CreationQr> {
+export function creationQr(origin: string, token?: string): BuiltQr<CreationQr> {
   const base = originBase(origin);
+  const trimmed = token?.trim() ?? "";
+  const url =
+    trimmed === ""
+      ? `${base}/?v=${CREATION_URL_VERSION}`
+      : `${base}/?v=${CREATION_URL_VERSION}&t=${encodeURIComponent(trimmed)}`;
   return finish({
     title: CREATION_TITLE,
-    url: `${base}/?v=${CREATION_URL_VERSION}`,
+    url,
     description: CREATION_DESCRIPTION,
     iconUrl: `${base}/icon.png`,
     themeColor: FRAME_COLOR,
@@ -114,7 +119,13 @@ function creationInstall(url: string): string | null {
     return null;
   }
   if (parsed.username !== "" || parsed.password !== "" || parsed.hash !== "") return null;
-  if (parsed.pathname !== "/" || parsed.search !== `?v=${CREATION_URL_VERSION}`) return null;
+  if (parsed.pathname !== "/") return null;
+  const keys = [...parsed.searchParams.keys()];
+  if (new Set(keys).size !== keys.length) return null;
+  const paired = keys.includes("t");
+  if ((paired ? keys.length !== 2 : keys.length !== 1) || !keys.includes("v")) return null;
+  if (parsed.searchParams.get("v") !== CREATION_URL_VERSION) return null;
+  if (paired && (parsed.searchParams.get("t") ?? "").trim() === "") return null;
   return parsed.origin;
 }
 
