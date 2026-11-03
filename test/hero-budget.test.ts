@@ -80,7 +80,12 @@ function mount(): HTMLElement {
     now: () => 0,
     loadToken: () => Promise.resolve(null),
     capture: () => Promise.resolve(null),
-    speak() {},
+    mouth: {
+      async speak() {
+        return { tag: "spoken" as const };
+      },
+      hush() {},
+    },
     exit() {},
     schedule: () => () => {},
     render(state, dispatch) {

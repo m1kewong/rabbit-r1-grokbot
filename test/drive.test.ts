@@ -1,6 +1,14 @@
 import { afterEach, describe, expect, it, vi } from "vitest";
 import { startDrive, type StreamCallbacks } from "../src/drive";
-import { buildSpeakPayload, type DeviceState, type SpeakPayload } from "../src/device";
+import type { DeviceState } from "../src/device";
+import type { Mouth } from "../src/mouth";
+
+const silentMouth: Mouth = {
+  async speak() {
+    return { tag: "spoken" };
+  },
+  hush() {},
+};
 
 afterEach(() => {
   vi.unstubAllGlobals();
@@ -10,7 +18,7 @@ describe("startDrive", () => {
   it("waits 250ms, cycles presets instead of sending, then speaks a reply in send order", async () => {
     const timers: { delayMs: number; fire: () => void; cancelled: boolean }[] = [];
     const calls: { message: string }[] = [];
-    const spoken: SpeakPayload[] = [];
+    const spoken: string[] = [];
     const screens: DeviceState[] = [];
     let now = 5_000;
     vi.stubGlobal("fetch", async (_url: string, init?: RequestInit) => {
@@ -29,8 +37,12 @@ describe("startDrive", () => {
       now: () => now,
       loadToken: () => Promise.resolve(null),
       capture: () => Promise.resolve("lights"),
-      speak(payload) {
-        spoken.push(payload);
+      mouth: {
+        async speak(text) {
+          spoken.push(text);
+          return { tag: "spoken" };
+        },
+        hush() {},
       },
       exit() {},
       schedule(delayMs, fire) {
@@ -61,14 +73,14 @@ describe("startDrive", () => {
       expect(calls.map((call) => call.message)).toEqual(["Brief me on what matters today."]),
     );
     await vi.waitFor(() =>
-      expect(spoken).toEqual([buildSpeakPayload("First")]),
+      expect(spoken).toEqual(["First"]),
     );
 
     drive.control("longPressStart");
     drive.control("longPressEnd");
     await vi.waitFor(() => expect(calls.map((call) => call.message)).toContain("lights"));
     await vi.waitFor(() =>
-      expect(spoken).toEqual([buildSpeakPayload("First"), buildSpeakPayload("Second")]),
+      expect(spoken).toEqual(["First", "Second"]),
     );
     drive.wheel(12);
     expect(screens.at(-1)?.personaId).toBe("jarvis");
@@ -96,7 +108,7 @@ describe("startDrive", () => {
       now: () => 0,
       loadToken: () => Promise.resolve(null),
       capture: () => Promise.resolve(null),
-      speak() {},
+      mouth: silentMouth,
       exit() {},
       schedule: () => () => {},
       render() {},
@@ -142,7 +154,7 @@ describe("startDrive", () => {
       now: () => 0,
       loadToken: () => Promise.resolve(null),
       capture: () => Promise.reject(new Error("web speech should stay unused")),
-      speak() {},
+      mouth: silentMouth,
       exit() {},
       schedule: () => () => {},
       render() {},
@@ -186,7 +198,7 @@ describe("startDrive", () => {
       now: () => 0,
       loadToken: () => Promise.resolve(null),
       capture: () => Promise.reject(new Error("web speech unused")),
-      speak() {},
+      mouth: silentMouth,
       exit() {},
       schedule(_delay, fire) {
         const timer = { fire };
@@ -228,7 +240,7 @@ describe("startDrive", () => {
       now: () => 0,
       loadToken: () => Promise.resolve(null),
       capture: () => Promise.reject(new Error("unused")),
-      speak() {},
+      mouth: silentMouth,
       exit() {},
       schedule(_delay, fire) {
         timers.push({ fire });
@@ -255,7 +267,7 @@ describe("startDrive", () => {
         captured = true;
         return Promise.resolve(null);
       },
-      speak() {},
+      mouth: silentMouth,
       exit() {},
       schedule: () => () => {},
       render(state) { screens.push(state); },
@@ -282,7 +294,7 @@ describe("startDrive", () => {
       now: () => 0,
       loadToken: () => Promise.resolve(null),
       capture: () => Promise.reject(new Error("web speech unused")),
-      speak() {},
+      mouth: silentMouth,
       exit() {},
       schedule: () => () => {},
       render(state) {
@@ -319,7 +331,7 @@ describe("startDrive", () => {
       now: () => 0,
       loadToken: () => Promise.resolve(null),
       capture: () => Promise.reject(new Error("unused")),
-      speak() {},
+      mouth: silentMouth,
       exit() {},
       schedule: () => () => {},
       render() {},
@@ -333,7 +345,7 @@ describe("startDrive", () => {
       now: () => 0,
       loadToken: () => Promise.resolve(null),
       capture: () => Promise.reject(new Error("unused")),
-      speak() {},
+      mouth: silentMouth,
       exit() {},
       schedule: () => () => {},
       render() {},
@@ -351,7 +363,7 @@ describe("startDrive", () => {
       now: () => 0,
       loadToken: () => Promise.resolve(null),
       capture: () => Promise.reject(new Error("unused")),
-      speak() {},
+      mouth: silentMouth,
       exit() {},
       schedule: () => () => {},
       render() {},
@@ -372,7 +384,7 @@ describe("startDrive", () => {
       now: () => 0,
       loadToken: () => Promise.resolve(null),
       capture: () => Promise.reject(new Error("unused")),
-      speak() {},
+      mouth: silentMouth,
       exit() {},
       schedule: () => () => {},
       render() {},
@@ -402,7 +414,7 @@ describe("startDrive", () => {
       now: () => 0,
       loadToken: () => Promise.resolve(null),
       capture: () => Promise.reject(new Error("unused")),
-      speak() {},
+      mouth: silentMouth,
       exit() {},
       schedule: () => () => {},
       render(state) {
@@ -431,7 +443,7 @@ describe("startDrive", () => {
       now: () => 0,
       loadToken: () => Promise.resolve(null),
       capture: () => Promise.reject(new Error("unused")),
-      speak() {},
+      mouth: silentMouth,
       exit() {},
       schedule: () => () => {},
       render(state) {
@@ -472,7 +484,7 @@ describe("startDrive", () => {
       now: () => 0,
       loadToken: () => Promise.resolve(null),
       capture: () => Promise.reject(new Error("unused")),
-      speak() {},
+      mouth: silentMouth,
       exit() {},
       schedule: () => () => {},
       render(state) {
@@ -503,7 +515,7 @@ describe("startDrive", () => {
       now: () => 0,
       loadToken: () => Promise.resolve(null),
       capture: () => Promise.reject(new Error("unused")),
-      speak() {},
+      mouth: silentMouth,
       exit() {},
       schedule: () => () => {},
       render(state) {
@@ -539,7 +551,7 @@ describe("ear report", () => {
       now: () => 0,
       loadToken: () => Promise.resolve(null),
       capture: () => Promise.resolve(null),
-      speak() {},
+      mouth: silentMouth,
       exit() {},
       schedule: () => () => {},
       render(state) {
