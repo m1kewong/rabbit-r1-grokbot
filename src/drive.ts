@@ -5,8 +5,9 @@ import {
   type DeviceEffect,
   type DeviceEvent,
   type DeviceState,
-  type SpeakPayload,
 } from "./device";
+import type { Mouth } from "./mouth";
+import { noteOf } from "./yue";
 
 export type StreamSession = {
   stop(): Promise<string | null>;
@@ -25,7 +26,7 @@ export type DrivePorts = {
   now(): number;
   loadToken(): Promise<string | null>;
   capture(): Promise<string | null>;
-  speak(payload: SpeakPayload): void;
+  mouth: Mouth;
   exit(): void;
   schedule(delayMs: number, fire: () => void): () => void;
   render(state: DeviceState, dispatch: (event: DeviceEvent) => void): void;
@@ -139,8 +140,16 @@ export function startDrive(ports: DrivePorts): {
       case "ptt-stop":
         endListen();
         break;
-      case "speak":
-        ports.speak(effect.payload);
+      case "speak": {
+        const id = effect.id;
+        void ports.mouth.speak(effect.text).then((outcome) => {
+          const note = noteOf(outcome);
+          if (note !== null) dispatch({ type: "mouth", id, note });
+        });
+        break;
+      }
+      case "hush":
+        ports.mouth.hush();
         break;
       case "closeWebView":
         ports.exit();

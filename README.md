@@ -41,6 +41,16 @@ wrangler secret put ELEVENLABS_API_KEY
 
 The worker refuses to start without `GATEWAY_TOKEN` unless `ALLOW_ANY_TOKEN=true`. `ALLOW_ANY_TOKEN=true` is a temporary local debug switch for a handset that has no paired token. Anyone who can reach the worker can spend the ElevenLabs quota.
 
+## Speak the reply
+
+SPK starts off. Leave it off and the handset does not call `/api/tts`. Turn SPK on and the handset plays the worker audio of that reply.
+
+The worker sends the reply text to ElevenLabs as Cantonese. The model is `eleven_v3`. The language code is `yue`. The default voice id is `JBFqnCBsd6RMkjVDRZzb`, the public premade voice in the current ElevenLabs Create speech example. Set `ELEVENLABS_TTS_VOICE_ID` when you want a different voice. A blank value keeps the default. `npm run serve` reads that variable from the environment.
+
+A missing `ELEVENLABS_API_KEY` shows `NO TTS KEY` in the log. A failed speech request shows `TTS FAIL`. The reply text stays on screen in both cases.
+
+This build's Creation URL version is `20261103-elyue`. Rescan the Creation QR so the R1 loads it.
+
 ## Which recognizer heard me
 
 The small line under the name says who took the last hold.

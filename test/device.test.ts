@@ -1,6 +1,7 @@
 import { describe, expect, it } from "vitest";
 import { FRAME_COLOR, nextPreset, PERSONAS, QUICK_PRESETS, type PresetId } from "../src/domain";
-import { buildSpeakPayload, initialDevice, reduceDevice, type DeviceState } from "../src/device";
+import { initialDevice, reduceDevice, type DeviceState } from "../src/device";
+import type { SpeakId } from "../src/yue";
 
 function arm(state: DeviceState, nowMs: number): DeviceState {
   const step = reduceDevice(state, { type: "sideClick", nowMs });
@@ -162,29 +163,118 @@ describe("reduceDevice", () => {
     expect(heard.state.composer).toBe("");
   });
 
-  it("emits the Rabbit speech payload only when the speaker is on", () => {
-    const ready = buildSpeakPayload("Ready");
-    expect(ready.message).toBe(
-      "Read the following text aloud exactly, word for word. Do not add, omit, translate, or summarize anything.\n\n<<<\nReady\n>>>",
-    );
-    expect(ready.useLLM).toBe(true);
-    expect(ready.wantsR1Response).toBe(true);
-    expect(ready.wantsJournalEntry).toBe(false);
-    expect(buildSpeakPayload("see >>> this").message).toBe(
-      "Read the following text aloud exactly, word for word. Do not add, omit, translate, or summarize anything.\n\n<<<\nsee >>> this\n>>>",
-    );
+  it("keeps the assistant line and emits no speak effect when the speaker is off", () => {
+    expect(initialDevice().speakerOn).toBe(false);
+    expect(initialDevice().lastSpeakId).toBe(0);
+    expect(initialDevice().turn).toEqual({ tag: "idle" });
     const pending = reduceDevice(arm(initialDevice(), 0), { type: "sideTimer", nowMs: 250 }).state;
-    const quiet = reduceDevice(pending, { type: "reply", sent: pending.turn.tag === "pending" ? pending.turn.text : "", reply: "Ready" });
-    expect(quiet.effects).toEqual([]);
-    expect(quiet.state.transcript.at(-1)).toEqual({ role: "assistant", content: "Ready" });
-    const loudState = reduceDevice(pending, { type: "toggleSpeaker" }).state;
     const sent = pending.turn.tag === "pending" ? pending.turn.text : "";
-    const loud = reduceDevice(loudState, { type: "reply", sent, reply: "Ready" });
-    expect(loud.effects).toEqual([{ type: "speak", payload: buildSpeakPayload("Ready") }]);
+    const quiet = reduceDevice(pending, { type: "reply", sent, reply: "Ready" });
+    expect(quiet.effects).toEqual([]);
+    expect(quiet.state.speakerOn).toBe(false);
+    expect(quiet.state.lastSpeakId).toBe(0);
+    expect(quiet.state.transcript.at(-1)).toEqual({ role: "assistant", content: "Ready" });
+    expect(quiet.state.turn).toEqual({
+      tag: "done",
+      text: sent,
+      reply: "Ready",
+      mouth: "quiet",
+      speechId: null,
+    });
+    const failed = reduceDevice(pending, { type: "reply", sent, reply: null });
+    expect(failed.effects).toEqual([]);
+    expect(failed.state.turn).toEqual({ tag: "failed" });
+    expect(failed.state.transcript).toEqual(pending.transcript);
+  });
+
+  it("emits the verbatim reply when the speaker is on", () => {
+    const pending = reduceDevice(arm(initialDevice(), 0), { type: "sideTimer", nowMs: 250 }).state;
+    const loudState = reduceDevice(pending, { type: "toggleSpeaker" }).state;
+    expect(loudState.speakerOn).toBe(true);
+    const sent = pending.turn.tag === "pending" ? pending.turn.text : "";
+    const loud = reduceDevice(loudState, { type: "reply", sent, reply: "see >>> this" });
+    expect(loud.state.lastSpeakId).not.toBe(0);
+    expect(loud.effects).toEqual([{ type: "speak", id: loud.state.lastSpeakId, text: "see >>> this" }]);
+    expect(loud.state.transcript.at(-1)).toEqual({ role: "assistant", content: "see >>> this" });
+    expect(loud.state.turn).toEqual({
+      tag: "done",
+      text: sent,
+      reply: "see >>> this",
+      mouth: "quiet",
+      speechId: loud.state.lastSpeakId,
+    });
+    expect(JSON.stringify(loud.effects)).not.toContain("Read the following");
+    const spaced = reduceDevice(ask(loud.state, 1_000), {
+      type: "reply",
+      sent: "Give me a status report.",
+      reply: "  hi  ",
+    });
+    expect(spaced.effects).toEqual([{ type: "speak", id: spaced.state.lastSpeakId, text: "  hi  " }]);
+    const blank = reduceDevice(ask(spaced.state, 2_000), {
+      type: "reply",
+      sent: "Give me a status report.",
+      reply: "   ",
+    });
+    expect(blank.effects).toEqual([]);
+    expect(blank.state.turn).toMatchObject({ mouth: "quiet", speechId: null, reply: "   " });
+    expect(blank.state.transcript.at(-1)).toEqual({ role: "assistant", content: "   " });
+    expect(blank.state.lastSpeakId).toBe(spaced.state.lastSpeakId);
     const exit = reduceDevice(loud.state, { type: "exit" });
     expect(exit.effects).toEqual([{ type: "closeWebView" }]);
   });
+
+  it("emits hush when the speaker turns off and does not speak a finished reply", () => {
+    const pending = reduceDevice(arm(initialDevice(), 0), { type: "sideTimer", nowMs: 250 }).state;
+    const sent = pending.turn.tag === "pending" ? pending.turn.text : "";
+    const loud = reduceDevice(reduceDevice(pending, { type: "toggleSpeaker" }).state, {
+      type: "reply",
+      sent,
+      reply: "Ready",
+    });
+    const off = reduceDevice(loud.state, { type: "toggleSpeaker" });
+    expect(off.state.speakerOn).toBe(false);
+    expect(off.effects).toEqual([{ type: "hush" }]);
+    expect(off.state.turn).toBe(loud.state.turn);
+    const on = reduceDevice(off.state, { type: "toggleSpeaker" });
+    expect(on.state.speakerOn).toBe(true);
+    expect(on.effects).toEqual([]);
+    expect(on.state.turn).toBe(off.state.turn);
+  });
+
+  it("ignores a mouth note whose speak id is not the done turn", () => {
+    const pending = reduceDevice(arm(initialDevice(), 0), { type: "sideTimer", nowMs: 250 }).state;
+    const sent = pending.turn.tag === "pending" ? pending.turn.text : "";
+    const first = reduceDevice(reduceDevice(pending, { type: "toggleSpeaker" }).state, {
+      type: "reply",
+      sent,
+      reply: "Ready",
+    });
+    const firstId = speechIdOf(first.state);
+    const noted = reduceDevice(first.state, { type: "mouth", id: firstId, note: "no-key" });
+    expect(noted.state.turn).toMatchObject({ mouth: "no-key", speechId: firstId, reply: "Ready" });
+    const repeat = reduceDevice(noted.state, { type: "mouth", id: firstId, note: "no-key" });
+    expect(repeat.state).toBe(noted.state);
+    const second = reduceDevice(ask(noted.state, 1_000), {
+      type: "reply",
+      sent: "Give me a status report.",
+      reply: "Ready",
+    });
+    const stale = reduceDevice(second.state, { type: "mouth", id: firstId, note: "failed" });
+    expect(stale.state).toBe(second.state);
+    expect(second.state.turn).toMatchObject({ mouth: "quiet", reply: "Ready" });
+    const current = reduceDevice(second.state, { type: "mouth", id: speechIdOf(second.state), note: "failed" });
+    expect(current.state.turn).toMatchObject({ mouth: "failed", speechId: speechIdOf(second.state) });
+  });
 });
+
+function ask(state: DeviceState, nowMs: number): DeviceState {
+  return reduceDevice(arm(state, nowMs), { type: "sideTimer", nowMs: nowMs + 250 }).state;
+}
+
+function speechIdOf(state: DeviceState): SpeakId {
+  if (state.turn.tag !== "done" || state.turn.speechId === null) throw new Error("missing speech id");
+  return state.turn.speechId;
+}
 
 
 describe("ear report and mic level", () => {

@@ -45,6 +45,15 @@ describe("parseEnv", () => {
     expect(keyed.ok).toBe(true);
     if (!keyed.ok) return;
     expect(keyed.config.elevenLabsApiKey).toBe("xi-key");
+    expect(keyed.config.ttsVoiceId).toBeNull();
+    const voiced = parseEnv({ ALLOW_ANY_TOKEN: "true", ELEVENLABS_TTS_VOICE_ID: "  voice-9  " });
+    expect(voiced.ok).toBe(true);
+    if (!voiced.ok) return;
+    expect(voiced.config.ttsVoiceId).toBe("voice-9");
+    const blankVoice = parseEnv({ ALLOW_ANY_TOKEN: "true", ELEVENLABS_TTS_VOICE_ID: "   " });
+    expect(blankVoice.ok).toBe(true);
+    if (!blankVoice.ok) return;
+    expect(blankVoice.config.ttsVoiceId).toBeNull();
   });
 });
 
@@ -52,7 +61,7 @@ describe("POST /api/chat", () => {
   it("answers OPTIONS with 204 CORS and an offline reply when no bridge token is set", async () => {
     const server = await listenGateway(startGateway(offlineConfig), { port: 0, staticDir: "dist" });
     try {
-      for (const path of ["/api/chat", "/v1/chat/completions", "/api/stt/token"]) {
+      for (const path of ["/api/chat", "/v1/chat/completions", "/api/stt/token", "/api/tts"]) {
         const preflight = await fetch(`${server.url}${path}`, { method: "OPTIONS" });
         expect(preflight.status).toBe(204);
         expect(await preflight.text()).toBe("");
@@ -145,7 +154,7 @@ describe("POST /api/chat", () => {
       }),
     });
     expect(served.kind).toBe("respond");
-    if (served.kind !== "respond" || served.response.body === null) throw new Error("expected a body");
+    if (served.kind !== "respond" || typeof served.response.body !== "string") throw new Error("expected a body");
     expect(JSON.parse(served.response.body)).toEqual({
       ok: true,
       reply: "Online.",
@@ -174,7 +183,7 @@ describe("POST /api/chat", () => {
       headers: {},
       body: JSON.stringify({ message: "Hello", personaId: "friday" }),
     });
-    expect(thrown.kind === "respond" && thrown.response.body && JSON.parse(thrown.response.body).reply).toBe(`${OFFLINE}Hello`);
+    expect(thrown.kind === "respond" && typeof thrown.response.body === "string" && JSON.parse(thrown.response.body).reply).toBe(`${OFFLINE}Hello`);
 
     vi.stubGlobal("fetch", async () => new Response("nope", { status: 503 }));
     const failed = await host.receive({
@@ -183,7 +192,7 @@ describe("POST /api/chat", () => {
       headers: {},
       body: JSON.stringify({ message: "Hello", personaId: "friday" }),
     });
-    expect(failed.kind === "respond" && failed.response.body && JSON.parse(failed.response.body).reply).toBe(`${OFFLINE}Hello`);
+    expect(failed.kind === "respond" && typeof failed.response.body === "string" && JSON.parse(failed.response.body).reply).toBe(`${OFFLINE}Hello`);
 
     vi.stubGlobal("fetch", async () => new Response("not-json", { status: 200 }));
     const bad = await host.receive({
@@ -192,7 +201,7 @@ describe("POST /api/chat", () => {
       headers: {},
       body: JSON.stringify({ message: "Hello", personaId: "friday" }),
     });
-    expect(bad.kind === "respond" && bad.response.body && JSON.parse(bad.response.body)).toMatchObject({
+    expect(bad.kind === "respond" && typeof bad.response.body === "string" && JSON.parse(bad.response.body)).toMatchObject({
       reply: `${OFFLINE}Hello`,
       model: "local-friday",
       routedToGrokBot: false,
@@ -211,7 +220,7 @@ describe("POST /api/chat", () => {
       headers: {},
       body: JSON.stringify({ message: "Hello", personaId: "friday" }),
     });
-    expect(localModel.kind === "respond" && localModel.response.body && JSON.parse(localModel.response.body)).toMatchObject({
+    expect(localModel.kind === "respond" && typeof localModel.response.body === "string" && JSON.parse(localModel.response.body)).toMatchObject({
       model: "local-friday",
       routedToGrokBot: false,
       reply: `${OFFLINE}Hello`,
@@ -275,7 +284,7 @@ function online(text: string): Response {
 }
 
 function readReply(served: Awaited<ReturnType<ReturnType<typeof startGateway>["receive"]>>): { reply?: string; error?: string; ok?: boolean; token?: string } {
-  if (served.kind !== "respond" || served.response.body === null) throw new Error("expected a body");
+  if (served.kind !== "respond" || typeof served.response.body !== "string") throw new Error("expected a body");
   return JSON.parse(served.response.body) as { reply?: string; error?: string; ok?: boolean; token?: string };
 }
 
@@ -506,6 +515,208 @@ describe("POST /api/stt/token", () => {
     vi.stubGlobal("fetch", () => Promise.reject(new Error("down")));
     const thrown = await host.receive({ method: "POST", path: "/api/stt/token", headers: {}, body: null });
     expect(readReply(thrown)).toEqual({ ok: false, error: "stt-upstream-failed" });
+  });
+});
+
+const DEFAULT_VOICE = "JBFqnCBsd6RMkjVDRZzb";
+const TTS_MPEG = Uint8Array.from([9, 8, 7, 6]);
+
+function ttsRequest(text: string): { method: string; path: string; headers: Record<string, string>; body: string } {
+  return {
+    method: "POST",
+    path: "/api/tts",
+    headers: {},
+    body: JSON.stringify({ text, voice: "other", model_id: "eleven_turbo", language_code: "en" }),
+  };
+}
+
+function responseText(body: string | Uint8Array | null): string {
+  if (body === null) return "";
+  if (typeof body === "string") return body;
+  return Buffer.from(body).toString("utf8");
+}
+
+function responseDump(response: { status: number; headers: Readonly<Record<string, string>>; body: string | Uint8Array | null }): string {
+  return `${response.status}\n${JSON.stringify(response.headers)}\n${responseText(response.body)}`;
+}
+
+function ttsHost(source: Parameters<typeof parseEnv>[0]): ReturnType<typeof startGateway> {
+  const parsed = parseEnv(source);
+  if (!parsed.ok) throw new Error(parsed.error);
+  return startGateway({
+    ...parsed.config,
+    bridgeService: {
+      fetch: async () => {
+        throw new Error("binding");
+      },
+    },
+  });
+}
+
+describe("POST /api/tts", () => {
+  it("does not fetch ElevenLabs when /api/tts is unauthorized", async () => {
+    const calls: string[] = [];
+    vi.stubGlobal("fetch", async (input: RequestInfo | URL) => {
+      calls.push(String(input));
+      return new Response(TTS_MPEG, { status: 200, headers: { "content-type": "audio/mpeg" } });
+    });
+    const host = ttsHost({ GATEWAY_TOKEN: "gate" });
+    const denied = await host.receive({
+      method: "POST",
+      path: "/api/tts",
+      headers: { authorization: "Bearer other" },
+      body: JSON.stringify({ text: "早晨" }),
+    });
+    expect(denied.kind).toBe("respond");
+    if (denied.kind !== "respond") return;
+    expect(denied.response.status).toBe(401);
+    expect(denied.response.headers["Access-Control-Allow-Origin"]).toBe("*");
+    expect(readReply(denied)).toEqual({ ok: false, error: "unauthorized" });
+    expect(calls).toEqual([]);
+  });
+
+  it("returns 503 tts-unconfigured and does not fetch when the key is missing", async () => {
+    const calls: string[] = [];
+    vi.stubGlobal("fetch", async () => {
+      calls.push("fetched");
+      throw new Error("fetched");
+    });
+    const host = ttsHost({ ALLOW_ANY_TOKEN: "true" });
+    const missing = await host.receive({
+      method: "POST",
+      path: "/api/tts",
+      headers: {},
+      body: "not-json",
+    });
+    expect(missing.kind).toBe("respond");
+    if (missing.kind !== "respond") return;
+    expect(missing.response.status).toBe(503);
+    expect(missing.response.headers["Access-Control-Allow-Origin"]).toBe("*");
+    expect(readReply(missing)).toEqual({ ok: false, error: "tts-unconfigured" });
+    expect(calls).toEqual([]);
+  });
+
+  it("rejects a tts body that is not speakable text", async () => {
+    const calls: string[] = [];
+    vi.stubGlobal("fetch", async () => {
+      calls.push("fetched");
+      throw new Error("fetched");
+    });
+    const host = ttsHost({ ALLOW_ANY_TOKEN: "true", ELEVENLABS_API_KEY: "xi-key" });
+    const bodies = [
+      null,
+      "",
+      "{",
+      "[]",
+      JSON.stringify({}),
+      JSON.stringify({ text: 1 }),
+      JSON.stringify({ text: "" }),
+      JSON.stringify({ text: "   " }),
+      JSON.stringify({ text: "a".repeat(5001) }),
+    ];
+    for (const body of bodies) {
+      const served = await host.receive({ method: "POST", path: "/api/tts", headers: {}, body });
+      expect(served.kind).toBe("respond");
+      if (served.kind !== "respond") return;
+      expect(served.response.status).toBe(400);
+      expect(readReply(served)).toEqual({ ok: false, error: "bad-request" });
+    }
+    expect(calls).toEqual([]);
+  });
+
+  it("returns the ElevenLabs mpeg bytes for yue eleven_v3 and hides the api key", async () => {
+    const calls: { url: string; key: string | null; accept: string | null; type: string | null; authorization: string | null; body: unknown }[] = [];
+    vi.stubGlobal("fetch", async (input: RequestInfo | URL, init?: RequestInit) => {
+      const headers = new Headers(init?.headers);
+      calls.push({
+        url: String(input),
+        key: headers.get("xi-api-key"),
+        accept: headers.get("accept"),
+        type: headers.get("content-type"),
+        authorization: headers.get("authorization"),
+        body: JSON.parse(String(init?.body)),
+      });
+      return new Response(TTS_MPEG, {
+        status: 200,
+        headers: { "content-type": "audio/mpeg; charset=binary", "xi-api-key": "xi-key" },
+      });
+    });
+    const host = ttsHost({ ALLOW_ANY_TOKEN: "true", ELEVENLABS_API_KEY: "xi-key" });
+    const served = await host.receive({
+      method: "POST",
+      path: "/api/tts",
+      headers: { authorization: "Bearer paired" },
+      body: JSON.stringify({ text: "see >>> this", voice: "other", model_id: "eleven_turbo", language_code: "en" }),
+    });
+    expect(served.kind).toBe("respond");
+    if (served.kind !== "respond") return;
+    expect(calls).toEqual([
+      {
+        url: `https://api.elevenlabs.io/v1/text-to-speech/${DEFAULT_VOICE}?output_format=mp3_44100_128`,
+        key: "xi-key",
+        accept: "audio/mpeg",
+        type: "application/json",
+        authorization: null,
+        body: { text: "see >>> this", model_id: "eleven_v3", language_code: "yue" },
+      },
+    ]);
+    expect(served.response.status).toBe(200);
+    expect(served.response.headers["content-type"]).toBe("audio/mpeg");
+    expect(served.response.headers["Access-Control-Allow-Origin"]).toBe("*");
+    expect(served.response.headers["Access-Control-Allow-Methods"]).toBe("GET, POST, OPTIONS");
+    expect(served.response.body).toEqual(TTS_MPEG);
+    expect(responseDump(served.response)).not.toContain("xi-key");
+    const long = await host.receive(ttsRequest("a".repeat(5000)));
+    expect(long.kind).toBe("respond");
+    if (long.kind !== "respond") return;
+    expect(long.response.status).toBe(200);
+    expect(long.response.body).toEqual(TTS_MPEG);
+    expect(calls[1]?.body).toEqual({ text: "a".repeat(5000), model_id: "eleven_v3", language_code: "yue" });
+  });
+
+  it("uses ELEVENLABS_TTS_VOICE_ID when set and the default voice when blank", async () => {
+    const urls: string[] = [];
+    vi.stubGlobal("fetch", async (input: RequestInfo | URL) => {
+      urls.push(String(input));
+      return new Response(TTS_MPEG, { status: 200, headers: { "content-type": "audio/mpeg" } });
+    });
+    const custom = ttsHost({
+      ALLOW_ANY_TOKEN: "true",
+      ELEVENLABS_API_KEY: "xi-key",
+      ELEVENLABS_TTS_VOICE_ID: "  voice-9  ",
+    });
+    const voiced = await custom.receive(ttsRequest("早晨"));
+    expect(voiced.kind).toBe("respond");
+    if (voiced.kind !== "respond") return;
+    expect(voiced.response.body).toEqual(TTS_MPEG);
+    expect(urls).toEqual(["https://api.elevenlabs.io/v1/text-to-speech/voice-9?output_format=mp3_44100_128"]);
+    const blank = ttsHost({
+      ALLOW_ANY_TOKEN: "true",
+      ELEVENLABS_API_KEY: "xi-key",
+      ELEVENLABS_TTS_VOICE_ID: "   ",
+    });
+    const fallback = await blank.receive(ttsRequest("早晨"));
+    expect(fallback.kind === "respond" && fallback.response.body).toEqual(TTS_MPEG);
+    expect(urls[1]).toBe(`https://api.elevenlabs.io/v1/text-to-speech/${DEFAULT_VOICE}?output_format=mp3_44100_128`);
+  });
+
+  it("returns 502 when ElevenLabs does not return mpeg bytes", async () => {
+    const host = ttsHost({ ALLOW_ANY_TOKEN: "true", ELEVENLABS_API_KEY: "xi-key" });
+    const upstream: Array<() => Response | Promise<Response>> = [
+      () => new Response("xi-key leaked", { status: 500, headers: { "content-type": "audio/mpeg" } }),
+      () => new Response(TTS_MPEG, { status: 200, headers: { "content-type": "application/json" } }),
+      () => new Response(new Uint8Array(), { status: 200, headers: { "content-type": "audio/mpeg" } }),
+      () => Promise.reject(new Error("xi-key down")),
+    ];
+    for (const next of upstream) {
+      vi.stubGlobal("fetch", next);
+      const served = await host.receive(ttsRequest("早晨"));
+      expect(served.kind).toBe("respond");
+      if (served.kind !== "respond") return;
+      expect(served.response.status).toBe(502);
+      expect(readReply(served)).toEqual({ ok: false, error: "tts-upstream-failed" });
+      expect(responseDump(served.response)).not.toContain("xi-key");
+    }
   });
 });
 

@@ -6,6 +6,7 @@ import {
   type PersonaId,
   type PresetId,
 } from "./domain";
+import { audibleReply, nextSpeakId, type AudibleReply, type MouthNote, type SpeakId } from "./yue";
 
 const SIDE_CLICK_MS = 250 as const;
 
@@ -19,7 +20,13 @@ export type Gesture =
 export type Turn =
   | { readonly tag: "idle" }
   | { readonly tag: "pending"; readonly text: string }
-  | { readonly tag: "done"; readonly text: string; readonly reply: string }
+  | {
+      readonly tag: "done";
+      readonly text: string;
+      readonly reply: string;
+      readonly mouth: MouthNote;
+      readonly speechId: SpeakId | null;
+    }
   | { readonly tag: "failed" }
   | { readonly tag: "silent"; readonly ear?: "r1" }
   | { readonly tag: "no-mic" };
@@ -37,6 +44,7 @@ export type DeviceState = {
   readonly presetId: PresetId;
   readonly gesture: Gesture;
   readonly speakerOn: boolean;
+  readonly lastSpeakId: SpeakId;
   readonly token: string | null;
   readonly turn: Turn;
   readonly transcript: readonly ChatTurn[];
@@ -60,30 +68,8 @@ export type DeviceEvent =
   | { readonly type: "toggleSpeaker" }
   | { readonly type: "token"; readonly token: string | null }
   | { readonly type: "reply"; readonly sent: string; readonly reply: string | null }
+  | { readonly type: "mouth"; readonly id: SpeakId; readonly note: "no-key" | "failed" }
   | { readonly type: "exit" };
-
-declare const readAloud: unique symbol;
-
-export type ReadAloudMessage = string & { readonly [readAloud]: "read-aloud" };
-
-const SPEAK_FLAGS = {
-  useLLM: true,
-  wantsR1Response: true,
-  wantsJournalEntry: false,
-} as const;
-
-export type SpeakPayload = {
-  readonly message: ReadAloudMessage;
-} & typeof SPEAK_FLAGS;
-
-export function buildSpeakPayload(reply: string): SpeakPayload {
-  const message = `Read the following text aloud exactly, word for word. Do not add, omit, translate, or summarize anything.
-
-<<<
-${reply}
->>>` as ReadAloudMessage;
-  return { message, ...SPEAK_FLAGS };
-}
 
 export type DeviceEffect =
   | {
@@ -92,7 +78,8 @@ export type DeviceEffect =
       readonly personaId: PersonaId;
       readonly history: readonly ChatTurn[];
     }
-  | { readonly type: "speak"; readonly payload: SpeakPayload }
+  | { readonly type: "speak"; readonly id: SpeakId; readonly text: AudibleReply }
+  | { readonly type: "hush" }
   | {
       readonly type: "armSideTimer";
       readonly fireAtMs: number;
@@ -115,6 +102,7 @@ export function initialDevice(): DeviceState {
     presetId: "status",
     gesture: { tag: "idle" },
     speakerOn: false,
+    lastSpeakId: 0 as SpeakId,
     token: null,
     turn: { tag: "idle" },
     transcript: [],
@@ -244,16 +232,31 @@ function onUtterance(state: DeviceState, heard: string | null, ear?: "r1" | "abs
 function onReply(state: DeviceState, sent: string, reply: string | null): DeviceStep {
   if (state.turn.tag !== "pending" || state.turn.text !== sent) return same(state);
   if (reply === null) return same({ ...state, turn: { tag: "failed" } });
-  const next: DeviceState = {
-    ...state,
-    turn: { tag: "done", text: sent, reply },
-    transcript: [...state.transcript, { role: "assistant", content: reply }],
-  };
-  if (!state.speakerOn) return same(next);
+  const transcript = [...state.transcript, { role: "assistant" as const, content: reply }];
+  const audible = audibleReply(reply);
+  if (!state.speakerOn || audible === null) {
+    return same({
+      ...state,
+      transcript,
+      turn: { tag: "done", text: sent, reply, mouth: "quiet", speechId: null },
+    });
+  }
+  const id = nextSpeakId(state.lastSpeakId);
   return {
-    state: next,
-    effects: [{ type: "speak", payload: buildSpeakPayload(reply) }],
+    state: {
+      ...state,
+      lastSpeakId: id,
+      transcript,
+      turn: { tag: "done", text: sent, reply, mouth: "quiet", speechId: id },
+    },
+    effects: [{ type: "speak", id, text: audible }],
   };
+}
+
+function onMouth(state: DeviceState, id: SpeakId, note: "no-key" | "failed"): DeviceStep {
+  const turn = state.turn;
+  if (turn.tag !== "done" || turn.speechId !== id || turn.mouth === note) return same(state);
+  return same({ ...state, turn: { ...turn, mouth: note } });
 }
 
 export function reduceDevice(state: DeviceState, event: DeviceEvent): DeviceStep {
@@ -269,7 +272,8 @@ export function reduceDevice(state: DeviceState, event: DeviceEvent): DeviceStep
     case "token":
       return same({ ...state, token: event.token });
     case "toggleSpeaker":
-      return same({ ...state, speakerOn: !state.speakerOn });
+      if (!state.speakerOn) return same({ ...state, speakerOn: true });
+      return { state: { ...state, speakerOn: false }, effects: [{ type: "hush" }] };
     case "exit":
       return { state, effects: [{ type: "closeWebView" }] };
     case "sideClick":
@@ -294,6 +298,8 @@ export function reduceDevice(state: DeviceState, event: DeviceEvent): DeviceStep
       return onUtterance(state, event.heard, event.ear);
     case "reply":
       return onReply(state, event.sent, event.reply);
+    case "mouth":
+      return onMouth(state, event.id, event.note);
     default: {
       const unreachable: never = event;
       return unreachable;

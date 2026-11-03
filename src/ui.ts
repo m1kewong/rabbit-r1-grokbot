@@ -2,7 +2,9 @@ import "./styles.css";
 import { getHealth } from "./client";
 import { PERSONAS, personaById, presetById, type HealthStatus, type Persona } from "./domain";
 import { startDrive } from "./drive";
-import { type DeviceEvent, type DeviceState, type EarReport, type SpeakPayload } from "./device";
+import { type DeviceEvent, type DeviceState, type EarReport } from "./device";
+import { createMouth } from "./mouth";
+import { MOUTH_COPY } from "./yue";
 import { createScribeListen } from "./scribe";
 import { CREATION_URL_VERSION, creationQr, openClawForLocation, renderDataUrl } from "./qr";
 
@@ -154,6 +156,9 @@ function statusMarkup(state: DeviceState): string {
   if (state.turn.tag === "silent") {
     const note = state.turn.ear === "r1" ? `<p class="hint">Chinese Traditional in R1 Settings</p>` : "";
     return `<p class="line failed"><span>Mic</span>No speech</p>${note}`;
+  }
+  if (state.turn.tag === "done" && state.turn.mouth !== "quiet") {
+    return `<p class="line failed"><span>Spk</span>${MOUTH_COPY[state.turn.mouth]}</p>`;
   }
   return "";
 }
@@ -636,10 +641,6 @@ export function browserTokens(target: Window = window): {
   };
 }
 
-export function postSpeech(payload: SpeakPayload): void {
-  (window as R1Window).PluginMessageHandler?.postMessage(JSON.stringify(payload));
-}
-
 export function exitWebView(): void {
   (window as R1Window).closeWebView?.postMessage("");
 }
@@ -748,7 +749,14 @@ export async function boot(root: HTMLElement, target: Window): Promise<void> {
       chatBearer: () => browserTokens(target).load(),
     }),
     hasMic: () => Boolean((target as R1Window).SpeechRecognition ?? (target as R1Window).webkitSpeechRecognition),
-    speak: postSpeech,
+    mouth: createMouth({
+      chatBearer: () => browserTokens(target).load(),
+      plugin() {
+        const handler = (target as R1Window).PluginMessageHandler;
+        if (!handler || typeof handler.postMessage !== "function") return null;
+        return handler;
+      },
+    }),
     exit: exitWebView,
     schedule: (delayMs, fire) => {
       const id = target.setTimeout(fire, delayMs);
