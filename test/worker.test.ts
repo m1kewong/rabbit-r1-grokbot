@@ -116,7 +116,7 @@ describe("worker binding", () => {
     expect(response.status).toBe(200);
     expect(calls).toEqual([
       {
-        url: "https://api.elevenlabs.io/v1/text-to-speech/JBFqnCBsd6RMkjVDRZzb?output_format=mp3_44100_128",
+        url: "https://api.elevenlabs.io/v1/text-to-speech/3b8fXc91YHS1i2DYAlBQ?output_format=mp3_44100_128",
         key: "xi-test",
       },
     ]);
