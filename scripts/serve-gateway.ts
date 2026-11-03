@@ -18,4 +18,5 @@ await serveMain(process.argv, {
   EVEN_G2_BRIDGE_URL: process.env.EVEN_G2_BRIDGE_URL,
   EVEN_G2_TOKEN: process.env.EVEN_G2_TOKEN,
   ELEVENLABS_API_KEY: process.env.ELEVENLABS_API_KEY,
+  ELEVENLABS_TTS_VOICE_ID: process.env.ELEVENLABS_TTS_VOICE_ID,
 });

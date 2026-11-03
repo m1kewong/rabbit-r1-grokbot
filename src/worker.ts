@@ -61,7 +61,14 @@ async function toHttp(request: Request): Promise<HttpRequest> {
 }
 
 function toResponse(response: HttpResponse): Response {
-  return new Response(response.body, { status: response.status, headers: response.headers });
+  return new Response(responseBody(response.body), { status: response.status, headers: response.headers });
+}
+
+function responseBody(body: HttpResponse["body"]): BodyInit | null {
+  if (body === null || typeof body === "string") return body;
+  const copy = new ArrayBuffer(body.byteLength);
+  new Uint8Array(copy).set(body);
+  return copy;
 }
 
 function adopt(attach: (socket: SocketPort) => void): Response {

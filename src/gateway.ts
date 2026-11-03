@@ -8,6 +8,7 @@ import {
   type PersonaId,
   type UpstreamModel,
 } from "./domain";
+import { audibleReply, TTS_PATH, TTS_UNCONFIGURED, type AudibleReply } from "./yue";
 
 export const LIMITS = {
   maxPayload: 1_048_576,
@@ -91,6 +92,7 @@ export type GatewayBindings = {
   readonly ALLOW_ANY_TOKEN?: string;
   readonly EVEN_G2_BRIDGE?: BridgeService;
   readonly ELEVENLABS_API_KEY?: string;
+  readonly ELEVENLABS_TTS_VOICE_ID?: string;
 };
 
 export type GatewayConfig = {
@@ -98,6 +100,7 @@ export type GatewayConfig = {
   readonly bridgeToken: string | null;
   readonly bridgeService?: BridgeService | null;
   readonly elevenLabsApiKey?: string | null;
+  readonly ttsVoiceId?: string | null;
 } & (
   | { readonly allowAnyToken: true; readonly gatewayToken: string | null }
   | { readonly allowAnyToken: false; readonly gatewayToken: string }
@@ -117,7 +120,7 @@ export type HttpRequest = {
 export type HttpResponse = {
   readonly status: number;
   readonly headers: Readonly<Record<string, string>>;
-  readonly body: string | null;
+  readonly body: string | Uint8Array | null;
 };
 
 export type SocketPort = {
@@ -156,6 +159,7 @@ export function parseEnv(source: GatewayBindings): ParsedEnv {
     bridgeToken: blank(source.EVEN_G2_TOKEN),
     bridgeService: source.EVEN_G2_BRIDGE ?? null,
     elevenLabsApiKey: blank(source.ELEVENLABS_API_KEY),
+    ttsVoiceId: blank(source.ELEVENLABS_TTS_VOICE_ID),
   };
   if (!allowAnyToken) {
     if (gatewayToken === null) return { ok: false, error: "missing-gateway-token" };
@@ -222,9 +226,12 @@ function upstreamModel(model: string): UpstreamModel | null {
   return model as UpstreamModel;
 }
 
+const DEFAULT_TTS_VOICE_ID = "JBFqnCBsd6RMkjVDRZzb";
+
 type ResolvedConfig = GatewayConfig & {
   readonly bridgeService: BridgeService | null;
   readonly elevenLabsApiKey: string | null;
+  readonly ttsVoiceId: string;
 };
 
 type ChatTransport =
@@ -236,6 +243,7 @@ function resolveConfig(config: GatewayConfig): ResolvedConfig {
     ...config,
     bridgeService: config.bridgeService ?? null,
     elevenLabsApiKey: config.elevenLabsApiKey ?? null,
+    ttsVoiceId: config.ttsVoiceId ?? DEFAULT_TTS_VOICE_ID,
   };
 }
 
@@ -1102,10 +1110,68 @@ async function handleCompletions(request: HttpRequest, config: ResolvedConfig, t
   return jsonResponse(200, openAiPayload(result), true);
 }
 
+const TTS_TEXT_LIMIT = 5_000;
+
+function ttsUpstreamFailed(): HttpResponse {
+  return jsonResponse(502, { ok: false, error: "tts-upstream-failed" }, true);
+}
+
+function spokenText(body: string | null): AudibleReply | null {
+  if (body === null) return null;
+  let value: unknown;
+  try {
+    value = JSON.parse(body);
+  } catch {
+    return null;
+  }
+  if (!isRecord(value) || typeof value.text !== "string") return null;
+  if (value.text.length > TTS_TEXT_LIMIT) return null;
+  return audibleReply(value.text);
+}
+
+function ttsEndpoint(voiceId: string): string {
+  return `https://api.elevenlabs.io/v1/text-to-speech/${encodeURIComponent(voiceId)}?output_format=mp3_44100_128`;
+}
+
+async function handleTts(request: HttpRequest, config: ResolvedConfig): Promise<HttpResponse> {
+  if (!sttCallerAllowed(config, sttPresented(request))) {
+    return jsonResponse(401, { ok: false, error: "unauthorized" }, true);
+  }
+  if (config.elevenLabsApiKey === null) {
+    return jsonResponse(503, { ok: false, error: TTS_UNCONFIGURED }, true);
+  }
+  const text = spokenText(request.body);
+  if (text === null) return badRequest();
+  try {
+    const response = await fetch(ttsEndpoint(config.ttsVoiceId), {
+      method: "POST",
+      headers: {
+        "xi-api-key": config.elevenLabsApiKey,
+        "content-type": "application/json",
+        accept: "audio/mpeg",
+      },
+      body: JSON.stringify({ text, model_id: "eleven_v3", language_code: "yue" }),
+    });
+    if (!response.ok) return ttsUpstreamFailed();
+    const type = response.headers.get("content-type") ?? "";
+    if (!type.includes("audio/mpeg")) return ttsUpstreamFailed();
+    const bytes = new Uint8Array(await response.arrayBuffer());
+    if (bytes.byteLength === 0) return ttsUpstreamFailed();
+    return {
+      status: 200,
+      headers: { ...CORS_HEADERS, "content-type": "audio/mpeg" },
+      body: bytes,
+    };
+  } catch {
+    return ttsUpstreamFailed();
+  }
+}
+
 const POST_ROUTES = [
   { id: "chat", path: "/api/chat" },
   { id: "completions", path: "/v1/chat/completions" },
   { id: "stt-token", path: "/api/stt/token" },
+  { id: "tts", path: TTS_PATH },
 ] as const;
 
 type PostId = (typeof POST_ROUTES)[number]["id"];
@@ -1116,6 +1182,7 @@ const POST_HANDLERS = {
   chat: handleApiChat,
   completions: handleCompletions,
   "stt-token": handleStt,
+  tts: handleTts,
 } as const;
 
 type PostHandlerId = keyof typeof POST_HANDLERS;
@@ -1143,6 +1210,8 @@ async function runPost(
       return POST_HANDLERS.completions(request, config, transport);
     case "stt-token":
       return POST_HANDLERS["stt-token"](request, config);
+    case "tts":
+      return POST_HANDLERS.tts(request, config);
     default: {
       const unreachable: never = id;
       return unreachable;

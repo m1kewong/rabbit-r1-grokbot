@@ -93,4 +93,35 @@ describe("worker binding", () => {
     });
     expect(bindingCalls).toHaveLength(1);
   });
+
+  it("posts /api/tts on the cached host with xi-test and leaves that key out of the body", async () => {
+    const mpeg = Uint8Array.from([255, 251, 16, 0]);
+    const calls: { url: string; key: string | null }[] = [];
+    vi.stubGlobal("fetch", async (input: RequestInfo | URL, init?: RequestInit) => {
+      calls.push({
+        url: String(input),
+        key: new Headers(init?.headers).get("xi-api-key"),
+      });
+      return new Response(mpeg, { status: 200, headers: { "content-type": "audio/mpeg" } });
+    });
+    const assets = { fetch: async () => new Response("missing", { status: 404 }) };
+    const response = await worker.fetch(
+      new Request("https://r1.example/api/tts", {
+        method: "POST",
+        headers: { "content-type": "application/json" },
+        body: JSON.stringify({ text: "早晨" }),
+      }),
+      { ALLOW_ANY_TOKEN: "true", ELEVENLABS_API_KEY: "not-the-cached-key", ASSETS: assets },
+    );
+    expect(response.status).toBe(200);
+    expect(calls).toEqual([
+      {
+        url: "https://api.elevenlabs.io/v1/text-to-speech/JBFqnCBsd6RMkjVDRZzb?output_format=mp3_44100_128",
+        key: "xi-test",
+      },
+    ]);
+    const bytes = new Uint8Array(await response.arrayBuffer());
+    expect(bytes).toEqual(mpeg);
+    expect(new TextDecoder().decode(bytes)).not.toContain("xi-test");
+  });
 });
