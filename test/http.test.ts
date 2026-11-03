@@ -518,7 +518,7 @@ describe("POST /api/stt/token", () => {
   });
 });
 
-const DEFAULT_VOICE = "JBFqnCBsd6RMkjVDRZzb";
+const DEFAULT_VOICE = "3b8fXc91YHS1i2DYAlBQ";
 const TTS_MPEG = Uint8Array.from([9, 8, 7, 6]);
 
 function ttsRequest(text: string): { method: string; path: string; headers: Record<string, string>; body: string } {
@@ -624,7 +624,7 @@ describe("POST /api/tts", () => {
     expect(calls).toEqual([]);
   });
 
-  it("returns the ElevenLabs mpeg bytes for yue eleven_v3 and hides the api key", async () => {
+  it("returns the ElevenLabs mpeg bytes for yue eleven_v4_turbo and hides the api key", async () => {
     const calls: { url: string; key: string | null; accept: string | null; type: string | null; authorization: string | null; body: unknown }[] = [];
     vi.stubGlobal("fetch", async (input: RequestInfo | URL, init?: RequestInit) => {
       const headers = new Headers(init?.headers);
@@ -657,7 +657,7 @@ describe("POST /api/tts", () => {
         accept: "audio/mpeg",
         type: "application/json",
         authorization: null,
-        body: { text: "see >>> this", model_id: "eleven_v3", language_code: "yue" },
+        body: { text: "see >>> this", model_id: "eleven_v4_turbo", language_code: "yue" },
       },
     ]);
     expect(served.response.status).toBe(200);
@@ -671,7 +671,7 @@ describe("POST /api/tts", () => {
     if (long.kind !== "respond") return;
     expect(long.response.status).toBe(200);
     expect(long.response.body).toEqual(TTS_MPEG);
-    expect(calls[1]?.body).toEqual({ text: "a".repeat(5000), model_id: "eleven_v3", language_code: "yue" });
+    expect(calls[1]?.body).toEqual({ text: "a".repeat(5000), model_id: "eleven_v4_turbo", language_code: "yue" });
   });
 
   it("uses ELEVENLABS_TTS_VOICE_ID when set and the default voice when blank", async () => {

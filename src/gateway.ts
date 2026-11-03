@@ -226,7 +226,7 @@ function upstreamModel(model: string): UpstreamModel | null {
   return model as UpstreamModel;
 }
 
-const DEFAULT_TTS_VOICE_ID = "JBFqnCBsd6RMkjVDRZzb";
+const DEFAULT_TTS_VOICE_ID = "3b8fXc91YHS1i2DYAlBQ";
 
 type ResolvedConfig = GatewayConfig & {
   readonly bridgeService: BridgeService | null;
@@ -1150,7 +1150,7 @@ async function handleTts(request: HttpRequest, config: ResolvedConfig): Promise<
         "content-type": "application/json",
         accept: "audio/mpeg",
       },
-      body: JSON.stringify({ text, model_id: "eleven_v3", language_code: "yue" }),
+      body: JSON.stringify({ text, model_id: "eleven_v4_turbo", language_code: "yue" }),
     });
     if (!response.ok) return ttsUpstreamFailed();
     const type = response.headers.get("content-type") ?? "";
